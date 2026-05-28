@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="Chonky Wonton Cafe" />
+<title>Chonky Wonton Cafe — Prototype</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #FAF4EA; height: 100%; overflow: hidden; }
+  #game { width: 100vw; height: 100vh; }
+  * { -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+</head>
+<body>
+<div id="game"></div>
+<script>
+"use strict";
+
+const W = 390, H = 844;
+const C = { cream:0xFAF4EA, card:0xFFFFFF, red:0xD64545, tan:0xE8C39E, pink:0xF2A6B3, green:0x9CB380, brown:0x5A453B, soft:0xEFE3D2, dim:0xD9CBB6 };
+const hex = c => '#' + c.toString(16).padStart(6, '0');
+
+const ORDERS = {
+  dumpling: { emoji:'🥟', value:5 },
+  boba:     { emoji:'🧋', value:5 },
+};
+const ORDER_KEYS = Object.keys(ORDERS);
+
+const COOK_MS    = 2500;   // time a Pet takes to make an order
+const PATIENCE_MS = 13000; // how long a customer waits before leaving
+const SPAWN_MS   = 2600;   // spawn cadence (when a slot is free)
+const SLOTS      = 4;
+const FACES = ['😀', '😋', '🥰', '😎', '🤓', '🙂', '🤗'];
+
+class Kitchen extends Phaser.Scene {
+  constructor() { super('kitchen'); }
+
+  create() {
+    this.coins = 0;
+    this.served = 0;
+    this.selected = null;
+    this.slots = new Array(SLOTS).fill(null); // each holds a customer container or null
+
+    this.add.rectangle(W/2, H/2, W, H, C.cream);
+
+    // ---- Header ----
+    this.add.text(W/2, 34, 'Chonky Wonton Cafe', {
+      fontFamily:'system-ui, -apple-system, sans-serif', fontSize:'20px',
+      color:hex(C.red), fontStyle:'700'
+    }).setOrigin(0.5);
+    this.add.text(W/2, 58, 'prototype', {
+      fontFamily:'system-ui, sans-serif', fontSize:'12px', color:hex(C.dim)
+    }).setOrigin(0.5);
+
+    this.coinLabel = this.add.text(W - 16, 30, '🪙 0', {
+      fontFamily:'system-ui, sans-serif', fontSize:'18px', color:hex(C.brown), fontStyle:'700'
+    }).setOrigin(1, 0.5);
+    this.servedLabel = this.add.text(16, 30, 'Served 0', {
+      fontFamily:'system-ui, sans-serif', fontSize:'14px', color:hex(C.brown)
+    }).setOrigin(0, 0.5);
+
+    // ---- Stations ----
+    this.stations = [
+      this.makeStation(W*0.28, 250, 'dumpling', '🥟', 'Bao-Bao', C.red),
+      this.makeStation(W*0.72, 250, 'boba',     '🧋', 'Pearl',   C.pink),
+    ];
+
+    // ---- Hint ----
+    this.hint = this.add.text(W/2, 430,
+      'Tap a customer, then the matching station.',
+      { fontFamily:'system-ui, sans-serif', fontSize:'14px', color:hex(C.brown), align:'center', wordWrap:{ width: W-60 } }
+    ).setOrigin(0.5);
+
+    // ---- Queue area divider ----
+    this.add.text(W/2, 500, 'COUNTER', {
+      fontFamily:'system-ui, sans-serif', fontSize:'12px', color:hex(C.dim), fontStyle:'700'
+    }).setOrigin(0.5);
+    const line = this.add.graphics();
+    line.lineStyle(2, C.dim, 0.6).beginPath();
+    line.moveTo(30, 518); line.lineTo(W-30, 518); line.strokePath();
+
+    // spawn loop
+    this.time.addEvent({ delay: SPAWN_MS, loop: true, callback: this.trySpawn, callbackScope: this });
+    this.trySpawn(); // one immediately
+    this.time.delayedCall(900, this.trySpawn, [], this);
+  }
+
+  slotX(i) { return (W / SLOTS) * (i + 0.5); }
+
+  // ---------- Stations ----------
+  makeStation(x, y, type, emoji, name, accent) {
+    const w = 150, h = 200;
+    const cont = this.add.container(x, y);
+    const g = this.add.graphics();
+    g.fillStyle(C.card, 1).fillRoundedRect(-w/2, -h/2, w, h, 18);
+    g.lineStyle(3, accent, 1).strokeRoundedRect(-w/2, -h/2, w, h, 18);
+    cont.add(g);
+
+    cont.add(this.add.text(0, -64, emoji, { fontSize:'52px' }).setOrigin(0.5));
+    cont.add(this.add.text(0, -8, name, {
+      fontFamily:'system-ui, sans-serif', fontSize:'18px', color:hex(C.brown), fontStyle:'700'
+    }).setOrigin(0.5));
+    cont.add(this.add.text(0, 16, 'makes ' + ORDERS[type].emoji, {
+      fontFamily:'system-ui, sans-serif', fontSize:'13px', color:hex(C.dim)
+    }).setOrigin(0.5));
+
+    // progress bar
+    const bar = this.add.graphics();
+    cont.add(bar);
+
+    const status = this.add.text(0, 78, 'Ready', {
+      fontFamily:'system-ui, sans-serif', fontSize:'13px', color:hex(accent), fontStyle:'700'
+    }).setOrigin(0.5);
+    cont.add(status);
+
+    cont.setSize(w, h);
+    cont.setInteractive(new Phaser.Geom.Rectangle(-w/2, -h/2, w, h), Phaser.Geom.Rectangle.Contains);
+    cont.data = { type, accent, busy:false, customer:null, w, h, bar, status, glow:g };
+    this.drawStationBar(cont, 0);
+
+    cont.on('pointerdown', () => this.onStationTap(cont));
+    return cont;
+  }
+
+  drawStationBar(station, p) {
+    const { bar } = station.data;
+    const bw = 110, bh = 12, bx = -bw/2, by = 42;
+    bar.clear();
+    bar.fillStyle(C.soft, 1).fillRoundedRect(bx, by, bw, bh, 6);
+    if (p > 0) {
+      bar.fillStyle(station.data.accent, 1).fillRoundedRect(bx, by, bw * Phaser.Math.Clamp(p,0,1), bh, 6);
+    }
+  }
+
+  onStationTap(station) {
+    const c = this.selected;
+    if (!c) { this.flashHint('Pick a customer first 👇'); return; }
+    if (station.data.busy) { this.shake(station); this.flashHint(station === this.stations[0] ? 'Bao-Bao is busy' : 'Pearl is busy'); return; }
+    if (c.data.type !== station.data.type) {
+      this.shake(station);
+      this.flashHint('Wrong station for ' + ORDERS[c.data.type].emoji);
+      return;
+    }
+    this.startCooking(station, c);
+  }
+
+  startCooking(station, customer) {
+    this.deselect();
+    customer.data.state = 'cooking';
+    customer.data.bubble.setText('⏳');
+    customer.data.patienceBar.setVisible(false);
+
+    station.data.busy = true;
+    station.data.customer = customer;
+    station.data.status.setText('Cooking…');
+
+    const prog = { v: 0 };
+    station.data.cookTween = this.tweens.add({
+      targets: prog, v: 1, duration: COOK_MS, ease: 'Linear',
+      onUpdate: () => this.drawStationBar(station, prog.v),
+      onComplete: () => this.serve(station),
+    });
+  }
+
+  serve(station) {
+    const customer = station.data.customer;
+    station.data.busy = false;
+    station.data.customer = null;
+    station.data.status.setText('Ready');
+    this.drawStationBar(station, 0);
+
+    if (customer && customer.active) {
+      const val = ORDERS[customer.data.type].value;
+      this.coins += val; this.served += 1;
+      this.coinLabel.setText('🪙 ' + this.coins);
+      this.servedLabel.setText('Served ' + this.served);
+      this.floatText(customer.x, customer.y - 50, '+' + val + ' 🪙', C.green);
+      customer.data.bubble.setText('💛');
+      this.leaveCustomer(customer, true);
+    }
+  }
+
+  // ---------- Customers ----------
+  trySpawn() {
+    const free = this.slots.findIndex(s => s === null);
+    if (free === -1) return;
+    this.spawnCustomer(free);
+  }
+
+  spawnCustomer(slot) {
+    const x = this.slotX(slot), y = 660;
+    const w = 80, h = 150;
+    const cont = this.add.container(x, -40);
+    const type = ORDER_KEYS[Phaser.Math.Between(0, ORDER_KEYS.length - 1)];
+
+    // selection ring
+    const ring = this.add.graphics();
+    ring.lineStyle(4, C.green, 1).strokeRoundedRect(-w/2-3, -h/2-3, w+6, h+6, 16);
+    ring.setVisible(false);
+    cont.add(ring);
+
+    const g = this.add.graphics();
+    g.fillStyle(C.card, 1).fillRoundedRect(-w/2, -h/2, w, h, 14);
+    g.lineStyle(2, C.dim, 1).strokeRoundedRect(-w/2, -h/2, w, h, 14);
+    cont.add(g);
+
+    const face = FACES[Phaser.Math.Between(0, FACES.length - 1)];
+    cont.add(this.add.text(0, -42, face, { fontSize:'34px' }).setOrigin(0.5));
+
+    // order bubble
+    const bubbleBg = this.add.graphics();
+    bubbleBg.fillStyle(C.soft, 1).fillCircle(0, 4, 24);
+    cont.add(bubbleBg);
+    const bubble = this.add.text(0, 4, ORDERS[type].emoji, { fontSize:'26px' }).setOrigin(0.5);
+    cont.add(bubble);
+
+    // patience bar
+    const patienceBar = this.add.graphics();
+    cont.add(patienceBar);
+
+    cont.setSize(w, h);
+    cont.setInteractive(new Phaser.Geom.Rectangle(-w/2, -h/2, w, h), Phaser.Geom.Rectangle.Contains);
+    cont.data = { type, state:'waiting', patience:PATIENCE_MS, slot, w, h, ring, bubble, patienceBar };
+
+    cont.on('pointerdown', () => this.onCustomerTap(cont));
+
+    this.slots[slot] = cont;
+    this.tweens.add({ targets: cont, y, duration: 350, ease: 'Back.Out' });
+    this.drawPatience(cont);
+  }
+
+  drawPatience(c) {
+    const { patienceBar, w } = c.data;
+    const bw = w - 16, bh = 8, bx = -bw/2, by = 56;
+    const p = c.data.patience / PATIENCE_MS;
+    let col = C.green;
+    if (p < 0.5) col = C.tan;
+    if (p < 0.25) col = C.red;
+    patienceBar.clear();
+    patienceBar.fillStyle(C.soft, 1).fillRoundedRect(bx, by, bw, bh, 4);
+    patienceBar.fillStyle(col, 1).fillRoundedRect(bx, by, bw * Phaser.Math.Clamp(p,0,1), bh, 4);
+  }
+
+  onCustomerTap(c) {
+    if (c.data.state !== 'waiting') return;
+    if (this.selected === c) { this.deselect(); return; }
+    this.deselect();
+    this.selected = c;
+    c.data.ring.setVisible(true);
+  }
+
+  deselect() {
+    if (this.selected && this.selected.active) this.selected.data.ring.setVisible(false);
+    this.selected = null;
+  }
+
+  leaveCustomer(c, happy) {
+    if (this.selected === c) this.deselect();
+    if (c.data.slot != null) this.slots[c.data.slot] = null;
+    c.data.state = 'leaving';
+    c.disableInteractive();
+    this.tweens.add({
+      targets: c, y: c.y + (happy ? -120 : 120), alpha: 0, duration: 500, ease:'Quad.In',
+      onComplete: () => c.destroy(),
+    });
+  }
+
+  // ---------- feedback ----------
+  floatText(x, y, str, color) {
+    const t = this.add.text(x, y, str, {
+      fontFamily:'system-ui, sans-serif', fontSize:'20px', color:hex(color), fontStyle:'700'
+    }).setOrigin(0.5);
+    this.tweens.add({ targets: t, y: y - 50, alpha: 0, duration: 900, ease:'Quad.Out', onComplete: () => t.destroy() });
+  }
+
+  shake(obj) {
+    const x0 = obj.x;
+    this.tweens.add({ targets: obj, x: x0 + 6, duration: 45, yoyo: true, repeat: 3, onComplete: () => { obj.x = x0; } });
+  }
+
+  flashHint(msg) {
+    this.hint.setText(msg);
+    this.hint.setColor(hex(C.red));
+    this.time.delayedCall(1100, () => {
+      this.hint.setText('Tap a customer, then the matching station.');
+      this.hint.setColor(hex(C.brown));
+    });
+  }
+
+  update(time, delta) {
+    for (const c of this.slots) {
+      if (!c || c.data.state !== 'waiting') continue;
+      c.data.patience -= delta;
+      if (c.data.patience <= 0) {
+        c.data.bubble.setText('💢');
+        this.leaveCustomer(c, false);
+      } else {
+        this.drawPatience(c);
+      }
+    }
+  }
+}
+
+new Phaser.Game({
+  type: Phaser.AUTO,
+  parent: 'game',
+  width: W, height: H,
+  backgroundColor: hex(C.cream),
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+  scene: [Kitchen],
+});
+</script>
+</body>
+</html>
