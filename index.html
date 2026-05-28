@@ -89,12 +89,12 @@ class Cafe extends Phaser.Scene {
   makeTutorialEmployee() {
     const x = W/2, y = 250;
     const cont = this.add.container(x, y).setDepth(30);
-    cont.add(this.add.circle(0, 0, 22, COL.tan).setStrokeStyle(3, COL.brown));
-    cont.add(this.add.text(0, 0, '🐱', { fontSize:'24px' }).setOrigin(0.5));
+    cont.add(this.add.circle(0, 0, 27, COL.tan).setStrokeStyle(3, COL.brown));
+    cont.add(this.add.text(0, 0, '🐱', { fontSize:'29px' }).setOrigin(0.5));
     const bg  = this.add.graphics();
-    const txt = this.add.text(0, -56, '', {
-      fontFamily:'system-ui,sans-serif', fontSize:'12px', color:hex(COL.brown),
-      align:'center', fontStyle:'700', wordWrap:{ width: 150 }
+    const txt = this.add.text(0, -64, '', {
+      fontFamily:'system-ui,sans-serif', fontSize:'15px', color:hex(COL.brown),
+      align:'center', fontStyle:'700', wordWrap:{ width: 180 }
     }).setOrigin(0.5);
     cont.add(bg); cont.add(txt);
     this.tutEmployee = { cont, bg, txt };
@@ -105,7 +105,7 @@ class Cafe extends Phaser.Scene {
     if (!this.tutEmployee) return;
     const { bg, txt } = this.tutEmployee;
     txt.setText(msg);
-    const w = Math.max(txt.width + 18, 70), h = txt.height + 12;
+    const w = Math.max(txt.width + 24, 90), h = txt.height + 16;
     const bx = -w/2, by = txt.y - h/2;
     bg.clear();
     bg.fillStyle(COL.card, 1).fillRoundedRect(bx, by, w, h, 8);
@@ -156,34 +156,40 @@ class Cafe extends Phaser.Scene {
     // empty-slot markers
     this.slotMarks = this.slots.map(s => {
       const m = this.add.graphics().setDepth(1);
-      m.fillStyle(COL.dim, 0.18).fillRoundedRect(s.x-46, s.y-52, 92, 104, 12);
-      m.lineStyle(2, COL.dim, 0.5).strokeRoundedRect(s.x-46, s.y-52, 92, 104, 12);
+      m.fillStyle(COL.dim, 0.18).fillRoundedRect(s.x-50, s.y-62, 100, 132, 14);
+      m.lineStyle(2, COL.dim, 0.5).strokeRoundedRect(s.x-50, s.y-62, 100, 132, 14);
       return m;
     });
-    this.add.text(W/2, 270, 'kitchen', { fontFamily:'system-ui,sans-serif', fontSize:'10px', color:hex(COL.dim) }).setOrigin(0.5);
-    this.add.text(W/2, 590, 'waiting area', { fontFamily:'system-ui,sans-serif', fontSize:'10px', color:hex(COL.dim) }).setOrigin(0.5);
+    this.add.text(W/2, 268, 'kitchen', { fontFamily:'system-ui,sans-serif', fontSize:'12px', color:hex(COL.dim) }).setOrigin(0.5);
+    this.add.text(W/2, 590, 'waiting area', { fontFamily:'system-ui,sans-serif', fontSize:'12px', color:hex(COL.dim) }).setOrigin(0.5);
   }
 
   // ---------------- HUD + toolbar ----------------
   buildHud() {
-    this.add.rectangle(W/2, 18, W, 36, COL.brown).setDepth(50);
-    this.coinLabel = this.add.text(10, 18, '', { fontFamily:'system-ui,sans-serif', fontSize:'15px', color:'#FAF4EA', fontStyle:'700' }).setOrigin(0,0.5).setDepth(51);
-    this.statLabel = this.add.text(W-10, 18, '', { fontFamily:'system-ui,sans-serif', fontSize:'12px', color:'#FAF4EA' }).setOrigin(1,0.5).setDepth(51);
-    this.hint = this.add.text(W/2, 18, '', { fontFamily:'system-ui,sans-serif', fontSize:'11px', color:'#FFE2A8' }).setOrigin(0.5,0.5).setDepth(51);
+    this.add.rectangle(W/2, 24, W, 48, COL.brown).setDepth(50);
+    this.coinLabel = this.add.text(12, 24, '', { fontFamily:'system-ui,sans-serif', fontSize:'21px', color:'#FAF4EA', fontStyle:'700' }).setOrigin(0,0.5).setDepth(51);
+    this.statLabel = this.add.text(W-12, 24, '', { fontFamily:'system-ui,sans-serif', fontSize:'14px', color:'#FAF4EA' }).setOrigin(1,0.5).setDepth(51);
+
+    // Hint shown as a floating pill in the open floor, where it's easy to read on mobile.
+    this.hintBg = this.add.graphics().setDepth(59);
+    this.hint = this.add.text(W/2, 405, '', {
+      fontFamily:'system-ui,sans-serif', fontSize:'16px', color:hex(COL.brown), fontStyle:'700',
+      align:'center', wordWrap:{ width: 300 }
+    }).setOrigin(0.5).setDepth(60);
     this.refreshHud();
   }
 
   buildToolbar() {
-    this.add.rectangle(W/2, 56, W, 40, COL.cream).setDepth(50);
+    this.add.rectangle(W/2, 72, W, 48, COL.cream).setDepth(50);
     this.buttons = [
-      { id:'dumpling', x:70,  label:()=>'Build 🥟', cost:()=>COST.dumpling },
-      { id:'boba',     x:175, label:()=>'Build 🧋', cost:()=>COST.boba },
-      { id:'pet',      x:300, label:()=>'Hire 🐾',  cost:()=>COST.pet },
+      { id:'dumpling', x:65,  label:()=>'Build 🥟', cost:()=>COST.dumpling },
+      { id:'boba',     x:195, label:()=>'Build 🧋', cost:()=>COST.boba },
+      { id:'pet',      x:325, label:()=>'Hire 🐾',  cost:()=>COST.pet },
     ];
     this.buttons.forEach(b => {
-      b.w = 104; b.h = 30; b.y = 56;
+      b.w = 120; b.h = 38; b.y = 72;
       b.rect = this.add.rectangle(b.x, b.y, b.w, b.h, COL.btn).setStrokeStyle(2, COL.brown).setDepth(51);
-      b.txt = this.add.text(b.x, b.y, '', { fontFamily:'system-ui,sans-serif', fontSize:'12px', color:'#FFFFFF', fontStyle:'700' }).setOrigin(0.5).setDepth(52);
+      b.txt = this.add.text(b.x, b.y, '', { fontFamily:'system-ui,sans-serif', fontSize:'15px', color:'#FFFFFF', fontStyle:'700' }).setOrigin(0.5).setDepth(52);
     });
     this.refreshToolbar();
   }
@@ -202,7 +208,15 @@ class Cafe extends Phaser.Scene {
     });
   }
 
-  setHint(msg) { this.hint.setText(msg || ''); }
+  setHint(msg) {
+    this.hint.setText(msg || '');
+    this.hintBg.clear();
+    if (msg) {
+      const w = this.hint.width + 26, h = this.hint.height + 16;
+      this.hintBg.fillStyle(COL.card, 0.94).fillRoundedRect(W/2-w/2, 405-h/2, w, h, 12);
+      this.hintBg.lineStyle(2, COL.dim, 1).strokeRoundedRect(W/2-w/2, 405-h/2, w, h, 12);
+    }
+  }
 
   // ---------------- Input ----------------
   inBox(px, py, o, halfW, halfH) {
@@ -217,7 +231,7 @@ class Cafe extends Phaser.Scene {
     // placing a station into a slot
     if (this.buildPending) {
       for (let i = 0; i < this.slots.length; i++) {
-        if (!this.slots[i].station && this.inBox(px, py, this.slots[i], 46, 52)) {
+        if (!this.slots[i].station && this.inBox(px, py, this.slots[i], 50, 66)) {
           this.tryBuild(i, this.buildPending);
           return;
         }
@@ -256,19 +270,19 @@ class Cafe extends Phaser.Scene {
     const cont = this.add.container(slot.x, slot.y).setDepth(10);
 
     // --- Station icon: a labeled stall showing the product it makes ---
-    cont.add(this.add.rectangle(0, -30, 86, 52, COL.card).setStrokeStyle(3, accent));
-    cont.add(this.add.rectangle(0, -53, 86, 12, accent));                 // sign strip
-    cont.add(this.add.text(0, -30, ORDERS[type].emoji, { fontSize:'30px' }).setOrigin(0.5));
+    cont.add(this.add.rectangle(0, -34, 96, 60, COL.card).setStrokeStyle(3, accent));
+    cont.add(this.add.rectangle(0, -58, 96, 14, accent));                 // sign strip
+    cont.add(this.add.text(0, -34, ORDERS[type].emoji, { fontSize:'38px' }).setOrigin(0.5));
 
     // --- Worker icon: a pet that shows what it's doing ---
-    const petDot = this.add.circle(0, 26, 20, COL.btnOff).setStrokeStyle(3, accent);
+    const petDot = this.add.circle(0, 30, 24, COL.btnOff).setStrokeStyle(3, accent);
     cont.add(petDot);
-    const petFace = this.add.text(0, 24, '', { fontSize:'22px' }).setOrigin(0.5);
+    const petFace = this.add.text(0, 28, '', { fontSize:'26px' }).setOrigin(0.5);
     cont.add(petFace);
-    const actionBubble = this.add.text(20, 12, '', { fontSize:'16px' }).setOrigin(0.5); // dish being made
+    const actionBubble = this.add.text(24, 14, '', { fontSize:'18px' }).setOrigin(0.5); // dish being made
     cont.add(actionBubble);
 
-    const status = this.add.text(0, 58, '', { fontFamily:'system-ui,sans-serif', fontSize:'10px', color:hex(accent), fontStyle:'700' }).setOrigin(0.5);
+    const status = this.add.text(0, 66, '', { fontFamily:'system-ui,sans-serif', fontSize:'12px', color:hex(accent), fontStyle:'700' }).setOrigin(0.5);
     cont.add(status);
     const bar = this.add.graphics(); cont.add(bar);
 
@@ -314,7 +328,7 @@ class Cafe extends Phaser.Scene {
   }
 
   drawStationBar(st, p) {
-    const bw = 64, bh = 6, bx = -bw/2, by = 47;
+    const bw = 76, bh = 8, bx = -bw/2, by = 56;
     st.bar.clear();
     st.bar.fillStyle(COL.cream, 1).fillRoundedRect(bx, by, bw, bh, 4);
     if (p > 0) st.bar.fillStyle(st.accent, 1).fillRoundedRect(bx, by, bw*Phaser.Math.Clamp(p,0,1), bh, 4);
@@ -328,10 +342,10 @@ class Cafe extends Phaser.Scene {
       ? forceType
       : (Math.random() < 0.5 ? 'dumpling' : 'boba');
     const cont = this.add.container(DOOR.x, DOOR.y).setDepth(20);
-    cont.add(this.add.circle(0, 0, 22, COL.card).setStrokeStyle(3, COL.dim));
-    cont.add(this.add.text(0, 0, '🙂', { fontSize:'22px' }).setOrigin(0.5));
-    cont.add(this.add.circle(0, -38, 16, COL.cream).setStrokeStyle(2, COL.dim));
-    const bubble = this.add.text(0, -38, '…', { fontSize:'18px' }).setOrigin(0.5);
+    cont.add(this.add.circle(0, 0, 27, COL.card).setStrokeStyle(3, COL.dim));
+    cont.add(this.add.text(0, 0, '🙂', { fontSize:'27px' }).setOrigin(0.5));
+    cont.add(this.add.circle(0, -46, 20, COL.cream).setStrokeStyle(2, COL.dim));
+    const bubble = this.add.text(0, -46, '…', { fontSize:'23px' }).setOrigin(0.5);
     cont.add(bubble);
     const patBar = this.add.graphics(); cont.add(patBar);
 
@@ -356,7 +370,7 @@ class Cafe extends Phaser.Scene {
   }
 
   drawPatience(cu) {
-    const bw = 40, bh = 6, bx = -bw/2, by = -62;
+    const bw = 50, bh = 8, bx = -bw/2, by = -74;
     const p = cu.patience / PATIENCE_MS;
     let c = COL.green; if (p < 0.5) c = COL.tan; if (p < 0.25) c = COL.red;
     cu.patBar.clear();
@@ -386,7 +400,7 @@ class Cafe extends Phaser.Scene {
     cu.claimed = true; cu.bubble.setText('⏳'); cu.patBar.clear();
     st.status.setText('cooking…');
     st.actionBubble.setText(ORDERS[st.type].emoji);   // worker is making this dish
-    st.workTween = this.tweens.add({ targets: st.petFace, y: 20, duration: 300, yoyo:true, repeat:-1, ease:'Sine.InOut' });
+    st.workTween = this.tweens.add({ targets: st.petFace, y: 24, duration: 300, yoyo:true, repeat:-1, ease:'Sine.InOut' });
     const prog = { v: 0 };
     this.tweens.add({
       targets: prog, v: 1, duration: ORDERS[st.type].cookMs / st.pet.speed, ease:'Linear',
@@ -398,7 +412,7 @@ class Cafe extends Phaser.Scene {
   serve(st, cu) {
     st.busy = false; st.customer = null;
     this.drawStationBar(st, 0);
-    if (st.workTween) { st.workTween.stop(); st.workTween = null; st.petFace.y = 24; }
+    if (st.workTween) { st.workTween.stop(); st.workTween = null; st.petFace.y = 28; }
     st.actionBubble.setText('');
     if (st.pet) st.status.setText('Ready');
 
@@ -423,8 +437,8 @@ class Cafe extends Phaser.Scene {
 
   // ---------------- feedback ----------------
   floatText(x, y, str, color) {
-    const t = this.add.text(x, y, str, { fontFamily:'system-ui,sans-serif', fontSize:'16px', color:hex(color), fontStyle:'700' }).setOrigin(0.5).setDepth(45);
-    this.tweens.add({ targets:t, y:y-40, alpha:0, duration:800, ease:'Quad.Out', onComplete:()=>t.destroy() });
+    const t = this.add.text(x, y, str, { fontFamily:'system-ui,sans-serif', fontSize:'20px', color:hex(color), fontStyle:'700' }).setOrigin(0.5).setDepth(45);
+    this.tweens.add({ targets:t, y:y-46, alpha:0, duration:800, ease:'Quad.Out', onComplete:()=>t.destroy() });
   }
 
   flashHint(msg) {
