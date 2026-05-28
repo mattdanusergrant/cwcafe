@@ -89,7 +89,6 @@ class Cafe extends Phaser.Scene {
 
     this.drawRoom();
     this.buildHud();
-    this.makeSpeech();
     this.buildToolbar();
 
     // Onboarding: one employee, no stations. Tap the greeting to begin; the first
@@ -126,41 +125,15 @@ class Cafe extends Phaser.Scene {
     cont.add(this.add.circle(0, 0, 27, COL.tan).setStrokeStyle(3, COL.brown));
     cont.add(this.add.text(0, 0, '🐱', { fontSize:'29px' }).setOrigin(0.5));
     this.tutEmployee = { cont, x, y };
-    this.speak(x, y - 64, 'Hi! I’m your helper 🐱\n( tap to continue )');
+    this.setStepHint('Hi! I’m your helper 🐱\nTap anywhere to start');
   }
 
   // First tap dismisses the greeting and brings in customer #1.
   beginTutorial() {
-    this.silence();
+    this.setStepHint('');
     this.setPhase('d-build');
     this.trySpawn();   // customer #1
   }
-
-  // Reusable speech bubble for whoever is talking (free employee, or a worker).
-  makeSpeech() {
-    this.speechBg = this.add.graphics().setDepth(34);
-    this.speechTxt = this.add.text(0, 0, '', {
-      fontFamily:'system-ui,sans-serif', fontSize:'15px', color:hex(COL.brown),
-      align:'center', fontStyle:'700', wordWrap:{ width: 200 }
-    }).setOrigin(0.5).setDepth(35).setVisible(false);
-  }
-
-  speak(x, y, msg) {
-    const t = this.speechTxt, bg = this.speechBg;
-    t.setText(msg).setVisible(true);
-    const w = Math.max(t.width + 24, 90), h = t.height + 16;
-    const cx = Phaser.Math.Clamp(x, w/2 + 8, W - w/2 - 8);
-    const cy = Math.max(y, h/2 + 100);   // keep clear of the toolbar (ends at 96)
-    t.setPosition(cx, cy);
-    const bx = cx - w/2, by = cy - h/2;
-    bg.clear();
-    bg.fillStyle(COL.card, 1).fillRoundedRect(bx, by, w, h, 10);
-    bg.lineStyle(2, COL.brown, 1).strokeRoundedRect(bx, by, w, h, 10);
-    const tx = Phaser.Math.Clamp(x, bx + 12, bx + w - 12);
-    bg.fillStyle(COL.card, 1).fillTriangle(tx - 7, by + h - 1, tx + 7, by + h - 1, tx, by + h + 9);
-  }
-
-  silence() { this.speechTxt.setVisible(false); this.speechBg.clear(); }
 
   startSpawnLoop() {
     if (this.spawnStarted) return;
@@ -173,7 +146,7 @@ class Cafe extends Phaser.Scene {
   walkEmployeeToStation(st) {
     const emp = this.tutEmployee; this.tutEmployee = null;
     this.firstStation = st;
-    this.silence(); this.setStepHint('');
+    this.setStepHint('');
     const openShop = () => {
       if (emp) emp.cont.destroy();
       if (this.petsFree > 0 && !st.pet) {
@@ -189,24 +162,19 @@ class Cafe extends Phaser.Scene {
 
   // Phase C: the 6th customer (boba) has arrived; ask the player to build the boba stall.
   startBobaBuildStep() {
-    const st = this.firstStation;
-    this.speak(st ? st.x : W/2, st ? st.y - 8 : 200, 'A 🧋 order — I only make 🥟!\nBuild the 🧋 stall.');
-    this.setStepHint('Tap the 🧋 slot to build it');
+    this.setStepHint('A 🧋 order — your 🥟 helper can’t make that.\nTap the 🧋 slot to build it.');
   }
 
   // Phase D: boba stall built but empty; ask the player to hire a helper to run it.
   startBobaStaffStep(st) {
     this.bobaStation = st;
     this.setPhase('b-staff');
-    const f = this.firstStation;
-    this.speak(f ? f.x : W/2, f ? f.y - 8 : 200, 'Now hire a helper\nto make 🧋! Tap “Hire 🐾”.');
-    this.setStepHint('Hire a helper for the 🧋 stall');
+    this.setStepHint('Now hire a helper to make 🧋!\nTap “Hire 🐾”.');
   }
 
   // Phase E: boba helper assigned — back to normal play (#7-10 boba, then random).
   finishBobaStep() {
     this.setPhase('done');
-    this.silence();
     this.setStepHint('');
   }
 
@@ -472,9 +440,7 @@ class Cafe extends Phaser.Scene {
         cu.bubble.setText(ORDERS[type].emoji);
         this.drawPatience(cu);
         if (this.tutPhase === 'd-build' && this.tutEmployee) {
-          const e = this.tutEmployee;
-          this.speak(e.x, e.y - 64, 'A customer! I need a 🥟 stall.\nTap the 🥟 slot to build it.');
-          this.setStepHint('Tap the 🥟 slot to build it');
+          this.setStepHint('A customer! I need a stall to cook.\nTap the 🥟 slot to build it.');
         } else if (triggerBoba) {
           this.startBobaBuildStep();
         }
