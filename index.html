@@ -46,7 +46,7 @@ const ORDERS = {
 };
 const ACCENT = { dumpling: COL.red, boba: COL.pink, noodle: COL.amber };
 
-const COST = { dumpling:20, boba:30, noodle:50, pet:100 };
+const COST = { dumpling:20, boba:30, noodle:50, pet:50 };
 const LOCKED_TYPES = ['noodle'];   // visible but not buildable yet — reserved for a future update
 const WORKER_EMOJIS = ['🐱', '🐶', '🐰', '🐻', '🦊', '🐼', '🐯', '🐸'];
 const START_COINS = 50;   // enough to build 🥟, then 🧋 + hire across the tutorial
@@ -63,7 +63,7 @@ const WAIT_Y = 510;
 const WAIT_X = [65, 130, 195, 260, 325];   // up to 5 table positions
 const START_TABLES = 2;
 const MAX_TABLES   = 5;
-const TABLE_COST   = 40;
+const TABLE_COST   = 50;
 const DOOR   = { x: W/2, y: 826 };
 
 class Cafe extends Phaser.Scene {
@@ -87,7 +87,9 @@ class Cafe extends Phaser.Scene {
     //  d-run    customers #2-3 (dumpling) stream in and get served
     //  b-build  customer #4 (boba) waits, build the 🧋 stall
     //  b-move   boba stall built; move your one helper over to make boba
-    //  done     normal play
+    //  h-earn   normal play; serving up to a 50 💰 balance
+    //  h-hire   reached 50 💰 — advised to hire a second helper
+    //  done     normal play (tutorial complete)
     this.tutPhase = 'intro';
     this.spawnCount = 0;          // how many customers have spawned
     this.spawnStarted = false;    // is the recurring spawn loop running yet
@@ -155,11 +157,28 @@ class Cafe extends Phaser.Scene {
   canBuildPhase(type) {
     if (this.isLocked(type)) return false;
     switch (this.tutPhase) {
-      case 'done':    return true;
+      case 'done':
+      case 'h-earn':
+      case 'h-hire':  return true;     // free play once the boba step is done
       case 'd-build': return type === 'dumpling';
       case 'b-build': return type === 'boba';
       default:        return false;   // intro, d-run, b-move
     }
+  }
+
+  // tutorial phases that behave like normal play for building/managing helpers
+  inFreePlay() { return this.tutPhase === 'done' || this.tutPhase === 'h-earn' || this.tutPhase === 'h-hire'; }
+
+  // hint shown when a gated control is tapped before its phase
+  tutHint() {
+    return {
+      'd-build':'Build the 🥟 stall first',
+      'd-run'  :'Let your helper serve these first…',
+      'b-build':'Build the 🧋 stall first',
+      'b-move' :'Move your helper to the 🧋 stall',
+      'h-earn' :'Keep serving to save up ' + COST.pet + ' 💰',
+      'h-hire' :'Hire your new helper first 🐾',
+    }[this.tutPhase] || '';
   }
 
   makeTutorialEmployee() {
@@ -214,10 +233,17 @@ class Cafe extends Phaser.Scene {
     this.setStepHint('You only have one helper!\nTap the 🧋 stall and move them over.');
   }
 
-  // Phase E: boba helper assigned — back to normal play (#5-6 boba, then random).
+  // Phase E: boba helper assigned — free play; now save toward hiring a 2nd helper.
   finishBobaStep() {
-    this.setPhase('done');
+    this.setPhase('h-earn');
     this.setStepHint('');
+  }
+
+  // Triggered when the player first saves up enough to hire: nudge them to do it.
+  maybeAdviseHire() {
+    if (this.tutPhase !== 'h-earn' || this.coins < COST.pet) return;
+    this.setPhase('h-hire');
+    this.setStepHint('You’ve saved ' + COST.pet + ' 💰! One helper can’t run both stalls —\ntap Hire 🐾 to bring on a second.');
   }
 
   // ---------------- Room ----------------
@@ -336,20 +362,19 @@ class Cafe extends Phaser.Scene {
     this.refreshBuildPads();
   }
 
-  canHireNow() { return this.tutPhase === 'done'; }
-  canManageStaff() { return this.tutPhase === 'done' || this.tutPhase === 'b-move'; }
+  canHireNow() { return this.tutPhase === 'h-hire' || this.tutPhase === 'done'; }
+  canManageStaff() { return this.inFreePlay() || this.tutPhase === 'b-move'; }
 
   refreshToolbar() {
     if (!this.buttons) return;
-    const done = this.tutPhase === 'done';
     this.buttons.forEach(b => {
       let label, usable;
       if (b.id === 'pet') {
         label = 'Hire 🐾 ' + COST.pet + ' 💰';
-        usable = done && this.coins >= COST.pet;
-      } else { // table
+        usable = this.canHireNow() && this.coins >= COST.pet;
+      } else { // table — unlocks only once the tutorial is fully done
         if (this.tableCount >= MAX_TABLES) { label = '🪑 Tables full'; usable = false; }
-        else { label = 'Add 🪑 ' + TABLE_COST + ' 💰'; usable = done && this.coins >= TABLE_COST; }
+        else { label = 'Add 🪑 ' + TABLE_COST + ' 💰'; usable = this.tutPhase === 'done' && this.coins >= TABLE_COST; }
       }
       b.txt.setText(label);
       b.rect.setFillStyle(usable ? COL.btn : COL.btnOff);
@@ -389,19 +414,14 @@ class Cafe extends Phaser.Scene {
     }
   }
 
-  onButton(b) {  // Hire or Add-table; both only usable in normal play
-    if (this.tutPhase !== 'done') {
-      const msg = {
-        'd-build':'Build the 🥟 stall first',
-        'd-run'  :'Let your helper serve these first…',
-        'b-build':'Build the 🧋 stall first',
-        'b-move' :'Move your helper to the 🧋 stall',
-      }[this.tutPhase] || '';
-      if (msg) this.flashHint(msg);
-      return;
+  onButton(b) {
+    if (b.id === 'table') {
+      if (this.tutPhase !== 'done') { const m = this.tutHint(); if (m) this.flashHint(m); return; }
+      this.tryAddTable(); return;
     }
-    if (b.id === 'table') this.tryAddTable();
-    else                  this.hirePet();
+    // hire
+    if (!this.canHireNow()) { const m = this.tutHint(); if (m) this.flashHint(m); return; }
+    this.hirePet();
   }
 
   tryAddTable() {
@@ -419,13 +439,7 @@ class Cafe extends Phaser.Scene {
     const slot = this.slots[i], type = slot.type;
     if (this.isLocked(type)) { this.flashHint(ORDERS[type].emoji + ' coming in a future update!'); return; }
     if (!this.canBuildPhase(type)) {
-      const msg = {
-        'd-build':'Build the 🥟 stall first',
-        'd-run'  :'Let your helper serve these first…',
-        'b-build':'Build the 🧋 stall first',
-        'b-move' :'Move your helper to the 🧋 stall',
-      }[this.tutPhase] || 'Locked for now';
-      this.flashHint(msg); return;
+      this.flashHint(this.tutHint() || 'Locked for now'); return;
     }
     if (this.coins < COST[type]) { this.flashHint('Need ' + COST[type] + ' 💰'); return; }
     this.coins -= COST[type];
@@ -485,6 +499,7 @@ class Cafe extends Phaser.Scene {
     if (this.coins < COST.pet) { this.flashHint('Need ' + COST.pet + ' 💰'); return; }
     this.coins -= COST.pet;
     const w = this.addWorker();                        // joins the idle pool
+    if (this.tutPhase === 'h-hire') { this.setPhase('done'); this.setStepHint(''); }  // tutorial complete
     this.refreshHud(); this.refreshToolbar();
     this.flashHint('Hired ' + w.emoji + '! Tap a stall to place them');
   }
@@ -661,6 +676,7 @@ class Cafe extends Phaser.Scene {
         cu.bubble.setText('💛');
         this.leaveCustomer(cu, true);
         this.refreshHud(); this.refreshToolbar();
+        this.maybeAdviseHire();
       }
     });
   }
