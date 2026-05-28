@@ -44,7 +44,7 @@ const ORDERS = {
 };
 
 const COST = { dumpling:20, boba:30, pet:15 };
-const START_COINS = 20;
+const START_COINS = 50;   // enough to build 🥟, then 🧋 + hire across the tutorial
 const PATIENCE_MS  = 12000;
 const SPAWN_MS     = 2600;
 const WALK_MS      = 1300;
@@ -65,7 +65,17 @@ class Cafe extends Phaser.Scene {
     this.lost = 0;
     this.petsFree = 1;            // start with one employee, hired but unassigned
     this.buildPending = null;     // 'dumpling' | 'boba' | null
-    this.tutorial = true;         // onboarding: paused spawning + frozen patience
+
+    // Onboarding phases:
+    //  d-build  customer #1 (dumpling) waits, build a 🥟 station
+    //  d-run    customers #2-5 (dumpling) stream in and get served
+    //  b-build  customer #6 (boba) waits, build a 🧋 station
+    //  b-staff  boba stall built, hire a helper to run it
+    //  done     normal play
+    this.tutPhase = 'd-build';
+    this.spawnCount = 0;          // how many customers have spawned
+    this.spawnStarted = false;    // is the recurring spawn loop running yet
+    this.firstStation = null;     // the dumpling station (our speaking employee)
 
     this.customers = [];
     this.stations = [];
@@ -74,65 +84,106 @@ class Cafe extends Phaser.Scene {
 
     this.drawRoom();
     this.buildHud();
+    this.makeSpeech();
     this.buildToolbar();
 
-    // Onboarding: one employee, no stations. A single customer arrives, the
+    // Onboarding: one employee, no stations. The first customer arrives and the
     // employee asks for a station; building it staffs them and opens the shop.
     this.makeTutorialEmployee();
 
     this.input.on('pointerdown', (p) => this.handleTap(p.x, p.y));
 
-    this.time.delayedCall(900, () => this.trySpawn('dumpling'));
+    this.time.delayedCall(900, () => this.trySpawn());  // customer #1
   }
 
   // ---------------- Onboarding ----------------
+  scriptedType(n) {
+    if (n <= 5)  return 'dumpling';   // customers 1-5
+    if (n <= 10) return 'boba';       // customers 6-10
+    return null;                      // 11+ random
+  }
+
   makeTutorialEmployee() {
     const x = W/2, y = 250;
     const cont = this.add.container(x, y).setDepth(30);
     cont.add(this.add.circle(0, 0, 27, COL.tan).setStrokeStyle(3, COL.brown));
     cont.add(this.add.text(0, 0, '🐱', { fontSize:'29px' }).setOrigin(0.5));
-    const bg  = this.add.graphics();
-    const txt = this.add.text(0, -64, '', {
+    this.tutEmployee = { cont, x, y };
+    this.speak(x, y - 60, 'Hi! I’m your helper 🐱');
+  }
+
+  // Reusable speech bubble for whoever is talking (free employee, or a worker).
+  makeSpeech() {
+    this.speechBg = this.add.graphics().setDepth(34);
+    this.speechTxt = this.add.text(0, 0, '', {
       fontFamily:'system-ui,sans-serif', fontSize:'15px', color:hex(COL.brown),
-      align:'center', fontStyle:'700', wordWrap:{ width: 180 }
-    }).setOrigin(0.5);
-    cont.add(bg); cont.add(txt);
-    this.tutEmployee = { cont, bg, txt };
-    this.setEmployeeSpeech('Hi! I’m your helper 🐱');
+      align:'center', fontStyle:'700', wordWrap:{ width: 200 }
+    }).setOrigin(0.5).setDepth(35).setVisible(false);
   }
 
-  setEmployeeSpeech(msg) {
-    if (!this.tutEmployee) return;
-    const { bg, txt } = this.tutEmployee;
-    txt.setText(msg);
-    const w = Math.max(txt.width + 24, 90), h = txt.height + 16;
-    const bx = -w/2, by = txt.y - h/2;
+  speak(x, y, msg) {
+    const t = this.speechTxt, bg = this.speechBg;
+    t.setText(msg).setVisible(true);
+    const w = Math.max(t.width + 24, 90), h = t.height + 16;
+    const cx = Phaser.Math.Clamp(x, w/2 + 8, W - w/2 - 8);
+    const cy = Math.max(y, h/2 + 100);   // keep clear of the toolbar (ends at 96)
+    t.setPosition(cx, cy);
+    const bx = cx - w/2, by = cy - h/2;
     bg.clear();
-    bg.fillStyle(COL.card, 1).fillRoundedRect(bx, by, w, h, 8);
-    bg.lineStyle(2, COL.brown, 1).strokeRoundedRect(bx, by, w, h, 8);
-    bg.fillStyle(COL.card, 1).fillTriangle(-6, by+h-1, 6, by+h-1, 0, by+h+8);
+    bg.fillStyle(COL.card, 1).fillRoundedRect(bx, by, w, h, 10);
+    bg.lineStyle(2, COL.brown, 1).strokeRoundedRect(bx, by, w, h, 10);
+    const tx = Phaser.Math.Clamp(x, bx + 12, bx + w - 12);
+    bg.fillStyle(COL.card, 1).fillTriangle(tx - 7, by + h - 1, tx + 7, by + h - 1, tx, by + h + 9);
   }
 
-  // The employee walks to the freshly-built station, mans it, then the shop opens.
+  silence() { this.speechTxt.setVisible(false); this.speechBg.clear(); }
+
+  startSpawnLoop() {
+    if (this.spawnStarted) return;
+    this.spawnStarted = true;
+    this.time.addEvent({ delay: SPAWN_MS, loop: true, callback: this.trySpawn, callbackScope: this });
+    this.time.delayedCall(SPAWN_MS, this.trySpawn, [], this);
+  }
+
+  // Phase A: the free employee walks to the new dumpling station, mans it, opens the shop.
   walkEmployeeToStation(st) {
     const emp = this.tutEmployee; this.tutEmployee = null;
-    this.setHint('');
+    this.firstStation = st;
+    this.silence(); this.setHint('');
     const openShop = () => {
       if (emp) emp.cont.destroy();
       if (this.petsFree > 0 && !st.pet) {
         st.pet = { speed: 1 }; this.petsFree -= 1;
         this.refreshStation(st); this.refreshHud();
       }
-      this.tutorial = false;   // patience ticks + customers start arriving
-      this.time.addEvent({ delay: SPAWN_MS, loop: true, callback: this.trySpawn, callbackScope: this });
-      this.time.delayedCall(SPAWN_MS, this.trySpawn, [], this);
+      this.tutPhase = 'd-run';   // dumpling rush (#2-5) begins; patience now ticks
+      this.startSpawnLoop();
     };
-    if (emp) {
-      emp.txt.setText(''); emp.bg.clear();
-      this.tweens.add({ targets: emp.cont, x: st.x, y: st.y + 26, duration: 550, ease:'Sine.InOut', onComplete: openShop });
-    } else {
-      openShop();
-    }
+    if (emp) this.tweens.add({ targets: emp.cont, x: st.x, y: st.y + 30, duration: 550, ease:'Sine.InOut', onComplete: openShop });
+    else openShop();
+  }
+
+  // Phase C: the 6th customer (boba) has arrived; ask the player to build a boba stall.
+  startBobaBuildStep() {
+    const st = this.firstStation;
+    this.speak(st ? st.x : W/2, st ? st.y - 8 : 200, 'A 🧋 order — I only make 🥟!\nBuild a 🧋 station.');
+    this.setHint('Tap “Build 🧋”, then an empty slot');
+  }
+
+  // Phase D: boba stall built but empty; ask the player to hire a helper to run it.
+  startBobaStaffStep(st) {
+    this.bobaStation = st;
+    this.tutPhase = 'b-staff';
+    const f = this.firstStation;
+    this.speak(f ? f.x : W/2, f ? f.y - 8 : 200, 'Now hire a helper\nto make 🧋! Tap “Hire 🐾”.');
+    this.setHint('Hire a helper for the 🧋 station');
+  }
+
+  // Phase E: boba helper assigned — back to normal play (#7-10 boba, then random).
+  finishBobaStep() {
+    this.tutPhase = 'done';
+    this.silence();
+    this.setHint('');
   }
 
   // ---------------- Room ----------------
@@ -241,8 +292,19 @@ class Cafe extends Phaser.Scene {
   }
 
   onButton(b) {
-    // During onboarding, steer the player to building their first station.
-    if (this.tutorial && b.id !== 'dumpling') { this.flashHint('First, build a 🥟 station'); return; }
+    // During onboarding, only the currently-prompted action is allowed.
+    if (this.tutPhase !== 'done') {
+      const allow = { 'd-build':'dumpling', 'b-build':'boba', 'b-staff':'pet' }[this.tutPhase];
+      if (b.id !== allow) {
+        const msg = {
+          'd-build':'First, build a 🥟 station',
+          'd-run'  :'Let your helper serve these first…',
+          'b-build':'Build a 🧋 station first',
+          'b-staff':'Hire a helper for boba',
+        }[this.tutPhase];
+        this.flashHint(msg); return;
+      }
+    }
     if (b.id === 'pet') { this.hirePet(); return; }
     // toggle build mode for a station type
     if (this.buildPending === b.id) { this.buildPending = null; this.setHint(''); }
@@ -259,7 +321,8 @@ class Cafe extends Phaser.Scene {
     this.coins -= COST[type];
     const st = this.placeStation(slotIndex, type);
     this.buildPending = null; this.setHint('');
-    if (this.tutorial) this.walkEmployeeToStation(st);   // employee mans it, then shop opens
+    if (this.tutPhase === 'd-build')      this.walkEmployeeToStation(st); // employee mans it, shop opens
+    else if (this.tutPhase === 'b-build') this.startBobaStaffStep(st);    // built, now prompt to hire
     else this.autoStaff();
     this.refreshHud(); this.refreshToolbar();
   }
@@ -312,8 +375,9 @@ class Cafe extends Phaser.Scene {
     if (this.coins < COST.pet) { this.flashHint('Need ' + COST.pet + ' 🪙'); return; }
     this.coins -= COST.pet;
     this.petsFree += 1;
-    this.autoStaff();
+    this.autoStaff();                                  // staffs the empty boba stall
     this.refreshHud(); this.refreshToolbar();
+    if (this.tutPhase === 'b-staff') this.finishBobaStep();
   }
 
   autoStaff() {
@@ -335,12 +399,18 @@ class Cafe extends Phaser.Scene {
   }
 
   // ---------------- Customers (automatic) ----------------
-  trySpawn(forceType) {
+  trySpawn() {
+    // Hold new arrivals while the player is mid build/hire step.
+    if (this.tutPhase === 'b-build' || this.tutPhase === 'b-staff') return;
     const spot = this.waitSpots.find(s => !s.taken);
     if (!spot) return; // shop full — they don't come in
-    const type = (forceType === 'dumpling' || forceType === 'boba')
-      ? forceType
-      : (Math.random() < 0.5 ? 'dumpling' : 'boba');
+
+    this.spawnCount += 1;
+    const type = this.scriptedType(this.spawnCount) || (Math.random() < 0.5 ? 'dumpling' : 'boba');
+    // The 6th customer (first boba) kicks off the boba tutorial step.
+    const triggerBoba = (this.tutPhase === 'd-run' && this.spawnCount === 6);
+    if (triggerBoba) this.tutPhase = 'b-build';   // pause further arrivals immediately
+
     const cont = this.add.container(DOOR.x, DOOR.y).setDepth(20);
     cont.add(this.add.circle(0, 0, 27, COL.card).setStrokeStyle(3, COL.dim));
     cont.add(this.add.text(0, 0, '🙂', { fontSize:'27px' }).setOrigin(0.5));
@@ -360,10 +430,12 @@ class Cafe extends Phaser.Scene {
         cu.state = 'waiting';
         cu.bubble.setText(ORDERS[type].emoji);
         this.drawPatience(cu);
-        if (this.tutorial) {
-          this.setEmployeeSpeech('A customer! I need a ' + ORDERS[type].emoji +
-            ' station.\nTap “Build ' + ORDERS[type].emoji + '”, then an empty slot.');
-          this.setHint('Build a ' + ORDERS[type].emoji + ' station');
+        if (this.tutPhase === 'd-build' && this.tutEmployee) {
+          const e = this.tutEmployee;
+          this.speak(e.x, e.y - 60, 'A customer! I need a 🥟 station.\nTap “Build 🥟”, then a slot.');
+          this.setHint('Build a 🥟 station');
+        } else if (triggerBoba) {
+          this.startBobaBuildStep();
         }
       }
     });
@@ -455,7 +527,8 @@ class Cafe extends Phaser.Scene {
       if (cu) this.claimAndCook(st, cu);
     }
     // patience (copy guards against splice-during-iteration in leaveCustomer)
-    if (this.tutorial) return;   // the first customer waits patiently while you learn
+    // Freeze patience during gated steps, when a customer is stuck waiting on you to build/hire.
+    if (this.tutPhase === 'd-build' || this.tutPhase === 'b-build' || this.tutPhase === 'b-staff') return;
     for (const cu of [...this.customers]) {
       if (cu.state !== 'waiting' || cu.claimed) continue;
       cu.patience -= delta;
