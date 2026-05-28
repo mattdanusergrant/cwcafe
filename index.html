@@ -20,286 +20,360 @@
 "use strict";
 
 const W = 390, H = 844;
-const C = { cream:0xFAF4EA, card:0xFFFFFF, red:0xD64545, tan:0xE8C39E, pink:0xF2A6B3, green:0x9CB380, brown:0x5A453B, soft:0xEFE3D2, dim:0xD9CBB6 };
+const COL = {
+  cream:    0xFAF4EA,
+  floor:    0xF3E7D3,
+  floorAlt: 0xEEE0CA,
+  wall:     0xC9B79A,
+  counter:  0xB98B5E,
+  card:     0xFFFFFF,
+  red:      0xD64545,
+  tan:      0xE8C39E,
+  pink:     0xF2A6B3,
+  green:    0x8FBF6F,
+  brown:    0x5A453B,
+  dim:      0xB6A488,
+  btn:      0x7BA86B,
+  btnOff:   0xC4BBA8,
+};
 const hex = c => '#' + c.toString(16).padStart(6, '0');
 
 const ORDERS = {
-  dumpling: { emoji:'🥟', value:5 },
-  boba:     { emoji:'🧋', value:5 },
+  dumpling: { emoji:'🥟', value:5, cookMs:2500 },
+  boba:     { emoji:'🧋', value:7, cookMs:3000 },
 };
-const ORDER_KEYS = Object.keys(ORDERS);
 
-const COOK_MS    = 2500;   // time a Pet takes to make an order
-const PATIENCE_MS = 13000; // how long a customer waits before leaving
-const SPAWN_MS   = 2600;   // spawn cadence (when a slot is free)
-const SLOTS      = 4;
-const FACES = ['😀', '😋', '🥰', '😎', '🤓', '🙂', '🤗'];
+const COST = { dumpling:20, boba:30, pet:15 };
+const START_COINS = 20;
+const PATIENCE_MS  = 12000;
+const SPAWN_MS     = 2600;
+const WALK_MS      = 650;
 
-class Kitchen extends Phaser.Scene {
-  constructor() { super('kitchen'); }
+// fixed station slots along the back, and customer waiting spots
+const SLOT_Y = 180;
+const SLOT_X = [78, 156, 234, 312];
+const WAIT_Y = 510;
+const WAIT_X = [65, 130, 195, 260, 325];
+const DOOR   = { x: W/2, y: 826 };
+
+class Cafe extends Phaser.Scene {
+  constructor() { super('cafe'); }
 
   create() {
-    this.coins = 0;
+    this.coins = START_COINS;
     this.served = 0;
-    this.selected = null;
-    this.slots = new Array(SLOTS).fill(null); // each holds a customer container or null
+    this.lost = 0;
+    this.petsFree = 0;            // hired but unassigned
+    this.buildPending = null;     // 'dumpling' | 'boba' | null
 
-    this.add.rectangle(W/2, H/2, W, H, C.cream);
+    this.customers = [];
+    this.stations = [];
+    this.waitSpots = WAIT_X.map(x => ({ x, y: WAIT_Y, taken: null }));
+    this.slots = SLOT_X.map(x => ({ x, y: SLOT_Y, station: null }));
 
-    // ---- Header ----
-    this.add.text(W/2, 34, 'Chonky Wonton Cafe', {
-      fontFamily:'system-ui, -apple-system, sans-serif', fontSize:'20px',
-      color:hex(C.red), fontStyle:'700'
-    }).setOrigin(0.5);
-    this.add.text(W/2, 58, 'prototype', {
-      fontFamily:'system-ui, sans-serif', fontSize:'12px', color:hex(C.dim)
-    }).setOrigin(0.5);
+    this.drawRoom();
+    this.buildHud();
+    this.buildToolbar();
 
-    this.coinLabel = this.add.text(W - 16, 30, '🪙 0', {
-      fontFamily:'system-ui, sans-serif', fontSize:'18px', color:hex(C.brown), fontStyle:'700'
-    }).setOrigin(1, 0.5);
-    this.servedLabel = this.add.text(16, 30, 'Served 0', {
-      fontFamily:'system-ui, sans-serif', fontSize:'14px', color:hex(C.brown)
-    }).setOrigin(0, 0.5);
+    // start staffed with one dumpling line so the shop runs immediately
+    this.placeStation(0, 'dumpling');
+    this.stations[0].pet = { speed: 1 };
+    this.refreshStation(this.stations[0]);
 
-    // ---- Stations ----
-    this.stations = [
-      this.makeStation(W*0.28, 250, 'dumpling', '🥟', 'Bao-Bao', C.red),
-      this.makeStation(W*0.72, 250, 'boba',     '🧋', 'Pearl',   C.pink),
-    ];
+    this.input.on('pointerdown', (p) => this.handleTap(p.x, p.y));
 
-    // ---- Hint ----
-    this.hint = this.add.text(W/2, 430,
-      'Tap a customer, then the matching station.',
-      { fontFamily:'system-ui, sans-serif', fontSize:'14px', color:hex(C.brown), align:'center', wordWrap:{ width: W-60 } }
-    ).setOrigin(0.5);
-
-    // ---- Queue area divider ----
-    this.add.text(W/2, 500, 'COUNTER', {
-      fontFamily:'system-ui, sans-serif', fontSize:'12px', color:hex(C.dim), fontStyle:'700'
-    }).setOrigin(0.5);
-    const line = this.add.graphics();
-    line.lineStyle(2, C.dim, 0.6).beginPath();
-    line.moveTo(30, 518); line.lineTo(W-30, 518); line.strokePath();
-
-    // spawn loop
     this.time.addEvent({ delay: SPAWN_MS, loop: true, callback: this.trySpawn, callbackScope: this });
-    this.trySpawn(); // one immediately
-    this.time.delayedCall(900, this.trySpawn, [], this);
+    this.time.delayedCall(700, this.trySpawn, [], this);
   }
 
-  slotX(i) { return (W / SLOTS) * (i + 0.5); }
+  // ---------------- Room ----------------
+  drawRoom() {
+    const g = this.add.graphics().setDepth(0);
+    const t = 38;
+    for (let yy = 96; yy < H; yy += t)
+      for (let xx = 0; xx < W; xx += t) {
+        const alt = (Math.floor(xx/t) + Math.floor(yy/t)) % 2 === 0;
+        g.fillStyle(alt ? COL.floor : COL.floorAlt, 1).fillRect(xx, yy, t, t);
+      }
+    g.fillStyle(COL.wall, 1);
+    g.fillRect(0, 96, W, 10);
+    g.fillRect(0, 96, 10, H-96);
+    g.fillRect(W-10, 96, 10, H-96);
+    g.fillRect(0, H-10, W, 10);
+    g.fillStyle(COL.floor, 1).fillRect(DOOR.x-38, H-10, 76, 10);     // doorway
+    g.fillStyle(COL.tan, 0.55).fillRoundedRect(DOOR.x-40, H-54, 80, 42, 8); // mat
+    g.fillStyle(COL.counter, 1).fillRoundedRect(24, 300, W-48, 26, 8); // counter band
 
-  // ---------- Stations ----------
-  makeStation(x, y, type, emoji, name, accent) {
-    const w = 150, h = 200;
-    const cont = this.add.container(x, y);
-    const g = this.add.graphics();
-    g.fillStyle(C.card, 1).fillRoundedRect(-w/2, -h/2, w, h, 18);
-    g.lineStyle(3, accent, 1).strokeRoundedRect(-w/2, -h/2, w, h, 18);
-    cont.add(g);
+    // empty-slot markers
+    this.slotMarks = this.slots.map(s => {
+      const m = this.add.graphics().setDepth(1);
+      m.fillStyle(COL.dim, 0.18).fillRoundedRect(s.x-46, s.y-52, 92, 104, 12);
+      m.lineStyle(2, COL.dim, 0.5).strokeRoundedRect(s.x-46, s.y-52, 92, 104, 12);
+      return m;
+    });
+    this.add.text(W/2, 270, 'kitchen', { fontFamily:'system-ui,sans-serif', fontSize:'10px', color:hex(COL.dim) }).setOrigin(0.5);
+    this.add.text(W/2, 590, 'waiting area', { fontFamily:'system-ui,sans-serif', fontSize:'10px', color:hex(COL.dim) }).setOrigin(0.5);
+  }
 
-    cont.add(this.add.text(0, -64, emoji, { fontSize:'52px' }).setOrigin(0.5));
-    cont.add(this.add.text(0, -8, name, {
-      fontFamily:'system-ui, sans-serif', fontSize:'18px', color:hex(C.brown), fontStyle:'700'
-    }).setOrigin(0.5));
-    cont.add(this.add.text(0, 16, 'makes ' + ORDERS[type].emoji, {
-      fontFamily:'system-ui, sans-serif', fontSize:'13px', color:hex(C.dim)
-    }).setOrigin(0.5));
+  // ---------------- HUD + toolbar ----------------
+  buildHud() {
+    this.add.rectangle(W/2, 18, W, 36, COL.brown).setDepth(50);
+    this.coinLabel = this.add.text(10, 18, '', { fontFamily:'system-ui,sans-serif', fontSize:'15px', color:'#FAF4EA', fontStyle:'700' }).setOrigin(0,0.5).setDepth(51);
+    this.statLabel = this.add.text(W-10, 18, '', { fontFamily:'system-ui,sans-serif', fontSize:'12px', color:'#FAF4EA' }).setOrigin(1,0.5).setDepth(51);
+    this.hint = this.add.text(W/2, 18, '', { fontFamily:'system-ui,sans-serif', fontSize:'11px', color:'#FFE2A8' }).setOrigin(0.5,0.5).setDepth(51);
+    this.refreshHud();
+  }
 
-    // progress bar
-    const bar = this.add.graphics();
-    cont.add(bar);
+  buildToolbar() {
+    this.add.rectangle(W/2, 56, W, 40, COL.cream).setDepth(50);
+    this.buttons = [
+      { id:'dumpling', x:70,  label:()=>'Build 🥟', cost:()=>COST.dumpling },
+      { id:'boba',     x:175, label:()=>'Build 🧋', cost:()=>COST.boba },
+      { id:'pet',      x:300, label:()=>'Hire 🐾',  cost:()=>COST.pet },
+    ];
+    this.buttons.forEach(b => {
+      b.w = 104; b.h = 30; b.y = 56;
+      b.rect = this.add.rectangle(b.x, b.y, b.w, b.h, COL.btn).setStrokeStyle(2, COL.brown).setDepth(51);
+      b.txt = this.add.text(b.x, b.y, '', { fontFamily:'system-ui,sans-serif', fontSize:'12px', color:'#FFFFFF', fontStyle:'700' }).setOrigin(0.5).setDepth(52);
+    });
+    this.refreshToolbar();
+  }
 
-    const status = this.add.text(0, 78, 'Ready', {
-      fontFamily:'system-ui, sans-serif', fontSize:'13px', color:hex(accent), fontStyle:'700'
-    }).setOrigin(0.5);
+  refreshHud() {
+    this.coinLabel.setText('🪙 ' + this.coins);
+    this.statLabel.setText('Served ' + this.served + '   Lost ' + this.lost + '   🐾 free ' + this.petsFree);
+  }
+
+  refreshToolbar() {
+    this.buttons.forEach(b => {
+      const affordable = this.coins >= b.cost();
+      const active = this.buildPending === b.id;
+      b.rect.setFillStyle(active ? COL.brown : (affordable ? COL.btn : COL.btnOff));
+      b.txt.setText(b.label() + ' ' + b.cost());
+    });
+  }
+
+  setHint(msg) { this.hint.setText(msg || ''); }
+
+  // ---------------- Input ----------------
+  inBox(px, py, o, halfW, halfH) {
+    return px >= o.x-halfW && px <= o.x+halfW && py >= o.y-halfH && py <= o.y+halfH;
+  }
+
+  handleTap(px, py) {
+    // toolbar buttons
+    for (const b of this.buttons) {
+      if (this.inBox(px, py, b, b.w/2, b.h/2)) { this.onButton(b); return; }
+    }
+    // placing a station into a slot
+    if (this.buildPending) {
+      for (let i = 0; i < this.slots.length; i++) {
+        if (!this.slots[i].station && this.inBox(px, py, this.slots[i], 46, 52)) {
+          this.tryBuild(i, this.buildPending);
+          return;
+        }
+      }
+      this.buildPending = null; this.setHint(''); this.refreshToolbar(); return;
+    }
+  }
+
+  onButton(b) {
+    if (b.id === 'pet') { this.hirePet(); return; }
+    // toggle build mode for a station type
+    if (this.buildPending === b.id) { this.buildPending = null; this.setHint(''); }
+    else if (this.coins >= b.cost()) {
+      if (this.slots.every(s => s.station)) { this.flashHint('No empty slots'); return; }
+      this.buildPending = b.id; this.setHint('Tap an empty kitchen slot');
+    } else { this.flashHint('Need ' + b.cost() + ' 🪙'); }
+    this.refreshToolbar();
+  }
+
+  // ---------------- Building / staffing ----------------
+  tryBuild(slotIndex, type) {
+    if (this.coins < COST[type]) { this.flashHint('Not enough 🪙'); return; }
+    this.coins -= COST[type];
+    this.placeStation(slotIndex, type);
+    this.buildPending = null; this.setHint('');
+    this.autoStaff();
+    this.refreshHud(); this.refreshToolbar();
+  }
+
+  placeStation(slotIndex, type) {
+    const slot = this.slots[slotIndex];
+    const accent = type === 'dumpling' ? COL.red : COL.pink;
+    const cont = this.add.container(slot.x, slot.y).setDepth(10);
+    cont.add(this.add.rectangle(0, -28, 84, 48, COL.card).setStrokeStyle(3, accent));
+    cont.add(this.add.text(0, -28, ORDERS[type].emoji, { fontSize:'26px' }).setOrigin(0.5));
+    const petDot = this.add.circle(0, 22, 22, COL.btnOff).setStrokeStyle(3, accent);
+    cont.add(petDot);
+    const petFace = this.add.text(0, 20, '', { fontSize:'22px' }).setOrigin(0.5);
+    cont.add(petFace);
+    const status = this.add.text(0, 50, '', { fontFamily:'system-ui,sans-serif', fontSize:'10px', color:hex(accent), fontStyle:'700' }).setOrigin(0.5);
     cont.add(status);
+    const bar = this.add.graphics(); cont.add(bar);
 
-    cont.setSize(w, h);
-    cont.setInteractive(new Phaser.Geom.Rectangle(-w/2, -h/2, w, h), Phaser.Geom.Rectangle.Contains);
-    cont.data = { type, accent, busy:false, customer:null, w, h, bar, status, glow:g };
-    this.drawStationBar(cont, 0);
-
-    cont.on('pointerdown', () => this.onStationTap(cont));
-    return cont;
+    const st = { type, slotIndex, x:slot.x, y:slot.y, accent, pet:null, busy:false, customer:null, cont, petDot, petFace, status, bar };
+    slot.station = st;
+    this.stations.push(st);
+    this.slotMarks[slotIndex].setVisible(false);
+    this.drawStationBar(st, 0);
+    this.refreshStation(st);
+    return st;
   }
 
-  drawStationBar(station, p) {
-    const { bar } = station.data;
-    const bw = 110, bh = 12, bx = -bw/2, by = 42;
-    bar.clear();
-    bar.fillStyle(C.soft, 1).fillRoundedRect(bx, by, bw, bh, 6);
-    if (p > 0) {
-      bar.fillStyle(station.data.accent, 1).fillRoundedRect(bx, by, bw * Phaser.Math.Clamp(p,0,1), bh, 6);
+  refreshStation(st) {
+    if (st.pet) {
+      st.petDot.setFillStyle(COL.tan);
+      st.petFace.setText(ORDERS[st.type].emoji);
+      if (!st.busy) st.status.setText('Ready');
+    } else {
+      st.petDot.setFillStyle(COL.btnOff);
+      st.petFace.setText('');
+      st.status.setText('needs 🐾');
     }
   }
 
-  onStationTap(station) {
-    const c = this.selected;
-    if (!c) { this.flashHint('Pick a customer first 👇'); return; }
-    if (station.data.busy) { this.shake(station); this.flashHint(station === this.stations[0] ? 'Bao-Bao is busy' : 'Pearl is busy'); return; }
-    if (c.data.type !== station.data.type) {
-      this.shake(station);
-      this.flashHint('Wrong station for ' + ORDERS[c.data.type].emoji);
-      return;
+  hirePet() {
+    if (this.coins < COST.pet) { this.flashHint('Need ' + COST.pet + ' 🪙'); return; }
+    this.coins -= COST.pet;
+    this.petsFree += 1;
+    this.autoStaff();
+    this.refreshHud(); this.refreshToolbar();
+  }
+
+  autoStaff() {
+    for (const st of this.stations) {
+      if (!st.pet && this.petsFree > 0) {
+        st.pet = { speed: 1 };
+        this.petsFree -= 1;
+        this.refreshStation(st);
+      }
     }
-    this.startCooking(station, c);
+    this.refreshHud();
   }
 
-  startCooking(station, customer) {
-    this.deselect();
-    customer.data.state = 'cooking';
-    customer.data.bubble.setText('⏳');
-    customer.data.patienceBar.setVisible(false);
-
-    station.data.busy = true;
-    station.data.customer = customer;
-    station.data.status.setText('Cooking…');
-
-    const prog = { v: 0 };
-    station.data.cookTween = this.tweens.add({
-      targets: prog, v: 1, duration: COOK_MS, ease: 'Linear',
-      onUpdate: () => this.drawStationBar(station, prog.v),
-      onComplete: () => this.serve(station),
-    });
+  drawStationBar(st, p) {
+    const bw = 74, bh = 8, bx = -bw/2, by = 38;
+    st.bar.clear();
+    st.bar.fillStyle(COL.cream, 1).fillRoundedRect(bx, by, bw, bh, 4);
+    if (p > 0) st.bar.fillStyle(st.accent, 1).fillRoundedRect(bx, by, bw*Phaser.Math.Clamp(p,0,1), bh, 4);
   }
 
-  serve(station) {
-    const customer = station.data.customer;
-    station.data.busy = false;
-    station.data.customer = null;
-    station.data.status.setText('Ready');
-    this.drawStationBar(station, 0);
-
-    if (customer && customer.active) {
-      const val = ORDERS[customer.data.type].value;
-      this.coins += val; this.served += 1;
-      this.coinLabel.setText('🪙 ' + this.coins);
-      this.servedLabel.setText('Served ' + this.served);
-      this.floatText(customer.x, customer.y - 50, '+' + val + ' 🪙', C.green);
-      customer.data.bubble.setText('💛');
-      this.leaveCustomer(customer, true);
-    }
-  }
-
-  // ---------- Customers ----------
+  // ---------------- Customers (automatic) ----------------
   trySpawn() {
-    const free = this.slots.findIndex(s => s === null);
-    if (free === -1) return;
-    this.spawnCustomer(free);
-  }
-
-  spawnCustomer(slot) {
-    const x = this.slotX(slot), y = 660;
-    const w = 80, h = 150;
-    const cont = this.add.container(x, -40);
-    const type = ORDER_KEYS[Phaser.Math.Between(0, ORDER_KEYS.length - 1)];
-
-    // selection ring
-    const ring = this.add.graphics();
-    ring.lineStyle(4, C.green, 1).strokeRoundedRect(-w/2-3, -h/2-3, w+6, h+6, 16);
-    ring.setVisible(false);
-    cont.add(ring);
-
-    const g = this.add.graphics();
-    g.fillStyle(C.card, 1).fillRoundedRect(-w/2, -h/2, w, h, 14);
-    g.lineStyle(2, C.dim, 1).strokeRoundedRect(-w/2, -h/2, w, h, 14);
-    cont.add(g);
-
-    const face = FACES[Phaser.Math.Between(0, FACES.length - 1)];
-    cont.add(this.add.text(0, -42, face, { fontSize:'34px' }).setOrigin(0.5));
-
-    // order bubble
-    const bubbleBg = this.add.graphics();
-    bubbleBg.fillStyle(C.soft, 1).fillCircle(0, 4, 24);
-    cont.add(bubbleBg);
-    const bubble = this.add.text(0, 4, ORDERS[type].emoji, { fontSize:'26px' }).setOrigin(0.5);
+    const spot = this.waitSpots.find(s => !s.taken);
+    if (!spot) return; // shop full — they don't come in
+    const type = Math.random() < 0.5 ? 'dumpling' : 'boba';
+    const cont = this.add.container(DOOR.x, DOOR.y).setDepth(20);
+    cont.add(this.add.circle(0, 0, 22, COL.card).setStrokeStyle(3, COL.dim));
+    cont.add(this.add.text(0, 0, '🙂', { fontSize:'22px' }).setOrigin(0.5));
+    cont.add(this.add.circle(0, -38, 16, COL.cream).setStrokeStyle(2, COL.dim));
+    const bubble = this.add.text(0, -38, '…', { fontSize:'18px' }).setOrigin(0.5);
     cont.add(bubble);
+    const patBar = this.add.graphics(); cont.add(patBar);
 
-    // patience bar
-    const patienceBar = this.add.graphics();
-    cont.add(patienceBar);
+    const cu = { type, state:'entering', patience:PATIENCE_MS, claimed:false, spot, cont, bubble, patBar };
+    spot.taken = cu;
+    this.customers.push(cu);
 
-    cont.setSize(w, h);
-    cont.setInteractive(new Phaser.Geom.Rectangle(-w/2, -h/2, w, h), Phaser.Geom.Rectangle.Contains);
-    cont.data = { type, state:'waiting', patience:PATIENCE_MS, slot, w, h, ring, bubble, patienceBar };
-
-    cont.on('pointerdown', () => this.onCustomerTap(cont));
-
-    this.slots[slot] = cont;
-    this.tweens.add({ targets: cont, y, duration: 350, ease: 'Back.Out' });
-    this.drawPatience(cont);
-  }
-
-  drawPatience(c) {
-    const { patienceBar, w } = c.data;
-    const bw = w - 16, bh = 8, bx = -bw/2, by = 56;
-    const p = c.data.patience / PATIENCE_MS;
-    let col = C.green;
-    if (p < 0.5) col = C.tan;
-    if (p < 0.25) col = C.red;
-    patienceBar.clear();
-    patienceBar.fillStyle(C.soft, 1).fillRoundedRect(bx, by, bw, bh, 4);
-    patienceBar.fillStyle(col, 1).fillRoundedRect(bx, by, bw * Phaser.Math.Clamp(p,0,1), bh, 4);
-  }
-
-  onCustomerTap(c) {
-    if (c.data.state !== 'waiting') return;
-    if (this.selected === c) { this.deselect(); return; }
-    this.deselect();
-    this.selected = c;
-    c.data.ring.setVisible(true);
-  }
-
-  deselect() {
-    if (this.selected && this.selected.active) this.selected.data.ring.setVisible(false);
-    this.selected = null;
-  }
-
-  leaveCustomer(c, happy) {
-    if (this.selected === c) this.deselect();
-    if (c.data.slot != null) this.slots[c.data.slot] = null;
-    c.data.state = 'leaving';
-    c.disableInteractive();
     this.tweens.add({
-      targets: c, y: c.y + (happy ? -120 : 120), alpha: 0, duration: 500, ease:'Quad.In',
-      onComplete: () => c.destroy(),
+      targets: cont, x: spot.x, y: spot.y, duration: WALK_MS, ease:'Sine.InOut',
+      onComplete: () => {
+        if (cu.state !== 'entering') return;
+        cu.state = 'waiting';
+        cu.bubble.setText(ORDERS[type].emoji);
+        this.drawPatience(cu);
+      }
     });
   }
 
-  // ---------- feedback ----------
-  floatText(x, y, str, color) {
-    const t = this.add.text(x, y, str, {
-      fontFamily:'system-ui, sans-serif', fontSize:'20px', color:hex(color), fontStyle:'700'
-    }).setOrigin(0.5);
-    this.tweens.add({ targets: t, y: y - 50, alpha: 0, duration: 900, ease:'Quad.Out', onComplete: () => t.destroy() });
+  drawPatience(cu) {
+    const bw = 40, bh = 6, bx = -bw/2, by = -62;
+    const p = cu.patience / PATIENCE_MS;
+    let c = COL.green; if (p < 0.5) c = COL.tan; if (p < 0.25) c = COL.red;
+    cu.patBar.clear();
+    cu.patBar.fillStyle(COL.cream, 1).fillRoundedRect(bx, by, bw, bh, 3);
+    cu.patBar.fillStyle(c, 1).fillRoundedRect(bx, by, bw*Phaser.Math.Clamp(p,0,1), bh, 3);
   }
 
-  shake(obj) {
-    const x0 = obj.x;
-    this.tweens.add({ targets: obj, x: x0 + 6, duration: 45, yoyo: true, repeat: 3, onComplete: () => { obj.x = x0; } });
+  removeCustomer(cu) {
+    const i = this.customers.indexOf(cu);
+    if (i >= 0) this.customers.splice(i, 1);
+    if (cu.spot) cu.spot.taken = null;
+  }
+
+  leaveCustomer(cu, happy) {
+    cu.state = 'leaving';
+    cu.patBar.clear();
+    this.removeCustomer(cu);
+    this.tweens.add({
+      targets: cu.cont, x: DOOR.x, y: DOOR.y + 40, alpha: 0, duration: 520, ease:'Sine.In',
+      onComplete: () => cu.cont.destroy()
+    });
+  }
+
+  // ---------------- Automatic order filling ----------------
+  claimAndCook(st, cu) {
+    st.busy = true; st.customer = cu;
+    cu.claimed = true; cu.bubble.setText('⏳'); cu.patBar.clear();
+    st.status.setText('cooking…');
+    const prog = { v: 0 };
+    this.tweens.add({
+      targets: prog, v: 1, duration: ORDERS[st.type].cookMs / st.pet.speed, ease:'Linear',
+      onUpdate: () => this.drawStationBar(st, prog.v),
+      onComplete: () => this.serve(st, cu),
+    });
+  }
+
+  serve(st, cu) {
+    st.busy = false; st.customer = null;
+    this.drawStationBar(st, 0);
+    if (st.pet) st.status.setText('Ready');
+
+    const alive = cu.state === 'waiting' && cu.cont.active;
+    const dish = this.add.text(st.x, st.y - 8, ORDERS[st.type].emoji, { fontSize:'22px' }).setOrigin(0.5).setDepth(40);
+    const tx = alive ? cu.cont.x : st.x, ty = alive ? cu.cont.y - 4 : st.y;
+    const dist = Phaser.Math.Distance.Between(st.x, st.y, tx, ty);
+    this.tweens.add({
+      targets: dish, x: tx, y: ty, duration: 250 + dist*0.7, ease:'Quad.Out',
+      onComplete: () => {
+        dish.destroy();
+        if (!alive) return;
+        this.coins += ORDERS[st.type].value;
+        this.served += 1;
+        this.floatText(cu.cont.x, cu.cont.y - 40, '+' + ORDERS[st.type].value + ' 🪙', COL.green);
+        cu.bubble.setText('💛');
+        this.leaveCustomer(cu, true);
+        this.refreshHud(); this.refreshToolbar();
+      }
+    });
+  }
+
+  // ---------------- feedback ----------------
+  floatText(x, y, str, color) {
+    const t = this.add.text(x, y, str, { fontFamily:'system-ui,sans-serif', fontSize:'16px', color:hex(color), fontStyle:'700' }).setOrigin(0.5).setDepth(45);
+    this.tweens.add({ targets:t, y:y-40, alpha:0, duration:800, ease:'Quad.Out', onComplete:()=>t.destroy() });
   }
 
   flashHint(msg) {
-    this.hint.setText(msg);
-    this.hint.setColor(hex(C.red));
-    this.time.delayedCall(1100, () => {
-      this.hint.setText('Tap a customer, then the matching station.');
-      this.hint.setColor(hex(C.brown));
-    });
+    this.setHint(msg);
+    this.time.delayedCall(1300, () => { if (this.hint.text === msg) this.setHint(this.buildPending ? 'Tap an empty kitchen slot' : ''); });
   }
 
+  // ---------------- main loop ----------------
   update(time, delta) {
-    for (const c of this.slots) {
-      if (!c || c.data.state !== 'waiting') continue;
-      c.data.patience -= delta;
-      if (c.data.patience <= 0) {
-        c.data.bubble.setText('💢');
-        this.leaveCustomer(c, false);
-      } else {
-        this.drawPatience(c);
-      }
+    // assign idle staffed stations to the longest-waiting matching order
+    for (const st of this.stations) {
+      if (!st.pet || st.busy) continue;
+      const cu = this.customers.find(c => c.state === 'waiting' && !c.claimed && c.type === st.type);
+      if (cu) this.claimAndCook(st, cu);
+    }
+    // patience (copy guards against splice-during-iteration in leaveCustomer)
+    for (const cu of [...this.customers]) {
+      if (cu.state !== 'waiting' || cu.claimed) continue;
+      cu.patience -= delta;
+      if (cu.patience <= 0) { cu.bubble.setText('💨'); this.lost += 1; this.leaveCustomer(cu, false); this.refreshHud(); }
+      else this.drawPatience(cu);
     }
   }
 }
@@ -308,9 +382,9 @@ new Phaser.Game({
   type: Phaser.AUTO,
   parent: 'game',
   width: W, height: H,
-  backgroundColor: hex(C.cream),
+  backgroundColor: hex(COL.cream),
   scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
-  scene: [Kitchen],
+  scene: [Cafe],
 });
 </script>
 </body>
