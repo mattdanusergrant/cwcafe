@@ -46,7 +46,8 @@ const ORDERS = {
 };
 const ACCENT = { dumpling: COL.red, boba: COL.pink, noodle: COL.amber };
 
-const COST = { dumpling:20, boba:30, noodle:35, pet:100 };
+const COST = { dumpling:20, boba:30, noodle:50, pet:100 };
+const LOCKED_TYPES = ['noodle'];   // visible but not buildable yet — reserved for a future update
 const WORKER_EMOJIS = ['🐱', '🐶', '🐰', '🐻', '🦊', '🐼', '🐯', '🐸'];
 const START_COINS = 50;   // enough to build 🥟, then 🧋 + hire across the tutorial
 const PATIENCE_MS  = 12000;
@@ -57,6 +58,7 @@ const WALK_MS      = 1300;
 const SLOT_Y = 180;
 const SLOT_X = [78, 195, 312];
 const SLOT_TYPES = ['dumpling', 'boba', 'noodle'];  // each slot is locked to one recipe
+const ORDERABLE_TYPES = SLOT_TYPES.filter(t => !LOCKED_TYPES.includes(t));  // what customers may ask for
 const WAIT_Y = 510;
 const WAIT_X = [65, 130, 195, 260, 325];   // up to 5 table positions
 const START_TABLES = 2;
@@ -148,7 +150,10 @@ class Cafe extends Phaser.Scene {
   setStepHint(msg) { this.stepHint = msg || ''; this.setHint(this.stepHint); }
 
   // Which recipe (if any) the player may build right now.
+  isLocked(type) { return LOCKED_TYPES.includes(type); }
+
   canBuildPhase(type) {
+    if (this.isLocked(type)) return false;
     switch (this.tutPhase) {
       case 'done':    return true;
       case 'd-build': return type === 'dumpling';
@@ -281,6 +286,12 @@ class Cafe extends Phaser.Scene {
     this.slots.forEach(s => {
       const pad = s.pad; if (!pad) return;
       if (s.station) { pad.cont.setVisible(false); return; }
+      if (this.isLocked(pad.type)) {   // reserved for a future update: shown, dimmed, locked
+        pad.cont.setVisible(true).setAlpha(0.4);
+        pad.costTxt.setText('Coming soon').setColor(hex(COL.dim));
+        pad.lock.setVisible(true);
+        return;
+      }
       const affordable = this.coins >= COST[pad.type];
       const active = this.canBuildPhase(pad.type);
       pad.cont.setVisible(true).setAlpha(active ? 1 : 0.35);
@@ -406,6 +417,7 @@ class Cafe extends Phaser.Scene {
   // ---------------- Building / staffing ----------------
   tryBuildSlot(i) {
     const slot = this.slots[i], type = slot.type;
+    if (this.isLocked(type)) { this.flashHint(ORDERS[type].emoji + ' coming in a future update!'); return; }
     if (!this.canBuildPhase(type)) {
       const msg = {
         'd-build':'Build the 🥟 stall first',
@@ -554,7 +566,7 @@ class Cafe extends Phaser.Scene {
     if (!spot) return; // every open table is taken — they don't come in
 
     this.spawnCount += 1;
-    const type = this.scriptedType(this.spawnCount) || Phaser.Utils.Array.GetRandom(SLOT_TYPES);
+    const type = this.scriptedType(this.spawnCount) || Phaser.Utils.Array.GetRandom(ORDERABLE_TYPES);
     // The 4th customer (first boba) kicks off the boba tutorial step.
     const triggerBoba = (this.tutPhase === 'd-run' && this.spawnCount === 4);
     if (triggerBoba) this.setPhase('b-build');   // pause further arrivals immediately
