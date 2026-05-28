@@ -63,8 +63,9 @@ class Cafe extends Phaser.Scene {
     this.coins = START_COINS;
     this.served = 0;
     this.lost = 0;
-    this.petsFree = 0;            // hired but unassigned
+    this.petsFree = 1;            // start with one employee, hired but unassigned
     this.buildPending = null;     // 'dumpling' | 'boba' | null
+    this.tutorial = true;         // onboarding: paused spawning + frozen patience
 
     this.customers = [];
     this.stations = [];
@@ -75,15 +76,63 @@ class Cafe extends Phaser.Scene {
     this.buildHud();
     this.buildToolbar();
 
-    // start staffed with one dumpling line so the shop runs immediately
-    this.placeStation(0, 'dumpling');
-    this.stations[0].pet = { speed: 1 };
-    this.refreshStation(this.stations[0]);
+    // Onboarding: one employee, no stations. A single customer arrives, the
+    // employee asks for a station; building it staffs them and opens the shop.
+    this.makeTutorialEmployee();
 
     this.input.on('pointerdown', (p) => this.handleTap(p.x, p.y));
 
-    this.time.addEvent({ delay: SPAWN_MS, loop: true, callback: this.trySpawn, callbackScope: this });
-    this.time.delayedCall(700, this.trySpawn, [], this);
+    this.time.delayedCall(900, () => this.trySpawn('dumpling'));
+  }
+
+  // ---------------- Onboarding ----------------
+  makeTutorialEmployee() {
+    const x = W/2, y = 250;
+    const cont = this.add.container(x, y).setDepth(30);
+    cont.add(this.add.circle(0, 0, 22, COL.tan).setStrokeStyle(3, COL.brown));
+    cont.add(this.add.text(0, 0, '🐱', { fontSize:'24px' }).setOrigin(0.5));
+    const bg  = this.add.graphics();
+    const txt = this.add.text(0, -56, '', {
+      fontFamily:'system-ui,sans-serif', fontSize:'12px', color:hex(COL.brown),
+      align:'center', fontStyle:'700', wordWrap:{ width: 150 }
+    }).setOrigin(0.5);
+    cont.add(bg); cont.add(txt);
+    this.tutEmployee = { cont, bg, txt };
+    this.setEmployeeSpeech('Hi! I’m your helper 🐱');
+  }
+
+  setEmployeeSpeech(msg) {
+    if (!this.tutEmployee) return;
+    const { bg, txt } = this.tutEmployee;
+    txt.setText(msg);
+    const w = Math.max(txt.width + 18, 70), h = txt.height + 12;
+    const bx = -w/2, by = txt.y - h/2;
+    bg.clear();
+    bg.fillStyle(COL.card, 1).fillRoundedRect(bx, by, w, h, 8);
+    bg.lineStyle(2, COL.brown, 1).strokeRoundedRect(bx, by, w, h, 8);
+    bg.fillStyle(COL.card, 1).fillTriangle(-6, by+h-1, 6, by+h-1, 0, by+h+8);
+  }
+
+  // The employee walks to the freshly-built station, mans it, then the shop opens.
+  walkEmployeeToStation(st) {
+    const emp = this.tutEmployee; this.tutEmployee = null;
+    this.setHint('');
+    const openShop = () => {
+      if (emp) emp.cont.destroy();
+      if (this.petsFree > 0 && !st.pet) {
+        st.pet = { speed: 1 }; this.petsFree -= 1;
+        this.refreshStation(st); this.refreshHud();
+      }
+      this.tutorial = false;   // patience ticks + customers start arriving
+      this.time.addEvent({ delay: SPAWN_MS, loop: true, callback: this.trySpawn, callbackScope: this });
+      this.time.delayedCall(SPAWN_MS, this.trySpawn, [], this);
+    };
+    if (emp) {
+      emp.txt.setText(''); emp.bg.clear();
+      this.tweens.add({ targets: emp.cont, x: st.x, y: st.y + 26, duration: 550, ease:'Sine.InOut', onComplete: openShop });
+    } else {
+      openShop();
+    }
   }
 
   // ---------------- Room ----------------
@@ -178,6 +227,8 @@ class Cafe extends Phaser.Scene {
   }
 
   onButton(b) {
+    // During onboarding, steer the player to building their first station.
+    if (this.tutorial && b.id !== 'dumpling') { this.flashHint('First, build a 🥟 station'); return; }
     if (b.id === 'pet') { this.hirePet(); return; }
     // toggle build mode for a station type
     if (this.buildPending === b.id) { this.buildPending = null; this.setHint(''); }
@@ -192,9 +243,10 @@ class Cafe extends Phaser.Scene {
   tryBuild(slotIndex, type) {
     if (this.coins < COST[type]) { this.flashHint('Not enough 🪙'); return; }
     this.coins -= COST[type];
-    this.placeStation(slotIndex, type);
+    const st = this.placeStation(slotIndex, type);
     this.buildPending = null; this.setHint('');
-    this.autoStaff();
+    if (this.tutorial) this.walkEmployeeToStation(st);   // employee mans it, then shop opens
+    else this.autoStaff();
     this.refreshHud(); this.refreshToolbar();
   }
 
@@ -269,10 +321,12 @@ class Cafe extends Phaser.Scene {
   }
 
   // ---------------- Customers (automatic) ----------------
-  trySpawn() {
+  trySpawn(forceType) {
     const spot = this.waitSpots.find(s => !s.taken);
     if (!spot) return; // shop full — they don't come in
-    const type = Math.random() < 0.5 ? 'dumpling' : 'boba';
+    const type = (forceType === 'dumpling' || forceType === 'boba')
+      ? forceType
+      : (Math.random() < 0.5 ? 'dumpling' : 'boba');
     const cont = this.add.container(DOOR.x, DOOR.y).setDepth(20);
     cont.add(this.add.circle(0, 0, 22, COL.card).setStrokeStyle(3, COL.dim));
     cont.add(this.add.text(0, 0, '🙂', { fontSize:'22px' }).setOrigin(0.5));
@@ -292,6 +346,11 @@ class Cafe extends Phaser.Scene {
         cu.state = 'waiting';
         cu.bubble.setText(ORDERS[type].emoji);
         this.drawPatience(cu);
+        if (this.tutorial) {
+          this.setEmployeeSpeech('A customer! I need a ' + ORDERS[type].emoji +
+            ' station.\nTap “Build ' + ORDERS[type].emoji + '”, then an empty slot.');
+          this.setHint('Build a ' + ORDERS[type].emoji + ' station');
+        }
       }
     });
   }
@@ -382,6 +441,7 @@ class Cafe extends Phaser.Scene {
       if (cu) this.claimAndCook(st, cu);
     }
     // patience (copy guards against splice-during-iteration in leaveCustomer)
+    if (this.tutorial) return;   // the first customer waits patiently while you learn
     for (const cu of [...this.customers]) {
       if (cu.state !== 'waiting' || cu.claimed) continue;
       cu.patience -= delta;
