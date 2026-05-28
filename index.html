@@ -284,7 +284,7 @@ class Cafe extends Phaser.Scene {
       const affordable = this.coins >= COST[pad.type];
       const active = this.canBuildPhase(pad.type);
       pad.cont.setVisible(true).setAlpha(active ? 1 : 0.35);
-      pad.costTxt.setText(COST[pad.type] + ' 🪙').setColor(affordable ? hex(COL.brown) : hex(COL.red));
+      pad.costTxt.setText(COST[pad.type] + ' 💰').setColor(affordable ? hex(COL.brown) : hex(COL.red));
       pad.lock.setVisible(!active);
     });
   }
@@ -319,7 +319,7 @@ class Cafe extends Phaser.Scene {
   }
 
   refreshHud() {
-    this.coinLabel.setText('🪙 ' + this.coins);
+    this.coinLabel.setText('💰 ' + this.coins);
     this.statLabel.setText('Served ' + this.served + '  Lost ' + this.lost +
       '  🐾' + this.workers.length + '  🪑' + this.tableCount + '/' + MAX_TABLES);
     this.refreshBuildPads();
@@ -334,11 +334,11 @@ class Cafe extends Phaser.Scene {
     this.buttons.forEach(b => {
       let label, usable;
       if (b.id === 'pet') {
-        label = 'Hire 🐾 ' + COST.pet + ' 🪙';
+        label = 'Hire 🐾 ' + COST.pet + ' 💰';
         usable = done && this.coins >= COST.pet;
       } else { // table
         if (this.tableCount >= MAX_TABLES) { label = '🪑 Tables full'; usable = false; }
-        else { label = 'Add 🪑 ' + TABLE_COST + ' 🪙'; usable = done && this.coins >= TABLE_COST; }
+        else { label = 'Add 🪑 ' + TABLE_COST + ' 💰'; usable = done && this.coins >= TABLE_COST; }
       }
       b.txt.setText(label);
       b.rect.setFillStyle(usable ? COL.btn : COL.btnOff);
@@ -395,7 +395,7 @@ class Cafe extends Phaser.Scene {
 
   tryAddTable() {
     if (this.tableCount >= MAX_TABLES) { this.flashHint('All ' + MAX_TABLES + ' tables open'); return; }
-    if (this.coins < TABLE_COST)       { this.flashHint('Need ' + TABLE_COST + ' 🪙'); return; }
+    if (this.coins < TABLE_COST)       { this.flashHint('Need ' + TABLE_COST + ' 💰'); return; }
     this.coins -= TABLE_COST;
     this.tableCount += 1;
     this.refreshTables();
@@ -415,7 +415,7 @@ class Cafe extends Phaser.Scene {
       }[this.tutPhase] || 'Locked for now';
       this.flashHint(msg); return;
     }
-    if (this.coins < COST[type]) { this.flashHint('Need ' + COST[type] + ' 🪙'); return; }
+    if (this.coins < COST[type]) { this.flashHint('Need ' + COST[type] + ' 💰'); return; }
     this.coins -= COST[type];
     const st = this.placeStation(i, type);
     this.setStepHint('');
@@ -470,7 +470,7 @@ class Cafe extends Phaser.Scene {
   }
 
   hirePet() {
-    if (this.coins < COST.pet) { this.flashHint('Need ' + COST.pet + ' 🪙'); return; }
+    if (this.coins < COST.pet) { this.flashHint('Need ' + COST.pet + ' 💰'); return; }
     this.coins -= COST.pet;
     const w = this.addWorker();                        // joins the idle pool
     this.refreshHud(); this.refreshToolbar();
@@ -489,7 +489,7 @@ class Cafe extends Phaser.Scene {
       ...others.map(w => ({ w, label: 'busy at ' + ORDERS[w.station.type].emoji })),
     ];
     if (opts.length === 0) {
-      this.flashHint('No other helpers — hire one (🐾 ' + COST.pet + ' 🪙)');
+      this.flashHint('No other helpers — hire one (🐾 ' + COST.pet + ' 💰)');
       return;
     }
     const rowH = 46, headH = 44, padB = 14, panelW = 300, halfW = (panelW - 24) / 2;
@@ -645,7 +645,7 @@ class Cafe extends Phaser.Scene {
         if (!alive) return;
         this.coins += ORDERS[st.type].value;
         this.served += 1;
-        this.floatText(cu.cont.x, cu.cont.y - 40, '+' + ORDERS[st.type].value + ' 🪙', COL.green);
+        this.floatText(cu.cont.x, cu.cont.y - 40, '+' + ORDERS[st.type].value + ' 💰', COL.green);
         cu.bubble.setText('💛');
         this.leaveCustomer(cu, true);
         this.refreshHud(); this.refreshToolbar();
