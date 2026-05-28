@@ -58,7 +58,10 @@ const SLOT_Y = 180;
 const SLOT_X = [78, 195, 312];
 const SLOT_TYPES = ['dumpling', 'boba', 'noodle'];  // each slot is locked to one recipe
 const WAIT_Y = 510;
-const WAIT_X = [65, 130, 195, 260, 325];
+const WAIT_X = [65, 130, 195, 260, 325];   // up to 5 table positions
+const START_TABLES = 2;
+const MAX_TABLES   = 5;
+const TABLE_COST   = 40;
 const DOOR   = { x: W/2, y: 826 };
 
 class Cafe extends Phaser.Scene {
@@ -88,6 +91,7 @@ class Cafe extends Phaser.Scene {
     this.spawnStarted = false;    // is the recurring spawn loop running yet
     this.firstStation = null;     // the dumpling station (our speaking employee)
 
+    this.tableCount = START_TABLES;   // active tables; customers only enter if one is free
     this.customers = [];
     this.stations = [];
     this.waitSpots = WAIT_X.map(x => ({ x, y: WAIT_Y, taken: null }));
@@ -233,6 +237,26 @@ class Cafe extends Phaser.Scene {
     this.slots.forEach(s => this.makeBuildPad(s));
     this.add.text(W/2, 268, 'kitchen', { fontFamily:'system-ui,sans-serif', fontSize:'12px', color:hex(COL.dim) }).setOrigin(0.5);
     this.add.text(W/2, 590, 'waiting area', { fontFamily:'system-ui,sans-serif', fontSize:'12px', color:hex(COL.dim) }).setOrigin(0.5);
+
+    // little tables under each waiting spot; faint ones are not open yet
+    this.tableMarks = this.waitSpots.map(() => this.add.graphics().setDepth(1));
+    this.refreshTables();
+  }
+
+  // Draw active tables solid and unopened ones as faint outlines.
+  refreshTables() {
+    this.waitSpots.forEach((s, i) => {
+      const g = this.tableMarks[i];
+      const open = i < this.tableCount;
+      const tx = s.x - 22, ty = s.y + 26, tw = 44, th = 24;
+      g.clear();
+      if (open) {
+        g.fillStyle(COL.tan, 1).fillRoundedRect(tx, ty, tw, th, 7);
+        g.lineStyle(2, COL.brown, 1).strokeRoundedRect(tx, ty, tw, th, 7);
+      } else {
+        g.lineStyle(2, COL.dim, 0.45).strokeRoundedRect(tx, ty, tw, th, 7);
+      }
+    });
   }
 
   // ---------------- Build pads (per-slot) ----------------
@@ -282,19 +306,22 @@ class Cafe extends Phaser.Scene {
 
   buildToolbar() {
     this.add.rectangle(W/2, 72, W, 48, COL.cream).setDepth(50);
-    // Stations are built on their slots; the toolbar just hires helpers.
-    const b = { id:'pet', x:W/2, y:72, w:180, h:38, label:()=>'Hire 🐾', cost:()=>COST.pet };
-    b.rect = this.add.rectangle(b.x, b.y, b.w, b.h, COL.btn).setStrokeStyle(2, COL.brown).setDepth(51);
-    b.txt = this.add.text(b.x, b.y, '', { fontFamily:'system-ui,sans-serif', fontSize:'15px', color:'#FFFFFF', fontStyle:'700' }).setOrigin(0.5).setDepth(52);
-    this.hireBtn = b;
-    this.buttons = [b];
+    // Stations are built on their slots; the toolbar hires helpers and adds tables.
+    this.buttons = [
+      { id:'table', x:102, y:72, w:178, h:38 },
+      { id:'pet',   x:288, y:72, w:178, h:38 },
+    ];
+    this.buttons.forEach(b => {
+      b.rect = this.add.rectangle(b.x, b.y, b.w, b.h, COL.btn).setStrokeStyle(2, COL.brown).setDepth(51);
+      b.txt  = this.add.text(b.x, b.y, '', { fontFamily:'system-ui,sans-serif', fontSize:'15px', color:'#FFFFFF', fontStyle:'700' }).setOrigin(0.5).setDepth(52);
+    });
     this.refreshToolbar();
   }
 
   refreshHud() {
     this.coinLabel.setText('🪙 ' + this.coins);
-    const idle = this.freeWorkers().length;
-    this.statLabel.setText('Served ' + this.served + '   Lost ' + this.lost + '   🐾 ' + this.workers.length + ' (' + idle + ' idle)');
+    this.statLabel.setText('Served ' + this.served + '  Lost ' + this.lost +
+      '  🐾' + this.workers.length + '  🪑' + this.tableCount + '/' + MAX_TABLES);
     this.refreshBuildPads();
   }
 
@@ -302,10 +329,20 @@ class Cafe extends Phaser.Scene {
   canManageStaff() { return this.tutPhase === 'done' || this.tutPhase === 'b-move'; }
 
   refreshToolbar() {
-    const b = this.hireBtn; if (!b) return;
-    const usable = this.canHireNow() && this.coins >= b.cost();
-    b.rect.setFillStyle(usable ? COL.btn : COL.btnOff);
-    b.txt.setText(b.label() + ' ' + b.cost());
+    if (!this.buttons) return;
+    const done = this.tutPhase === 'done';
+    this.buttons.forEach(b => {
+      let label, usable;
+      if (b.id === 'pet') {
+        label = 'Hire 🐾 ' + COST.pet;
+        usable = done && this.coins >= COST.pet;
+      } else { // table
+        if (this.tableCount >= MAX_TABLES) { label = '🪑 Tables full'; usable = false; }
+        else { label = 'Add 🪑 ' + TABLE_COST; usable = done && this.coins >= TABLE_COST; }
+      }
+      b.txt.setText(label);
+      b.rect.setFillStyle(usable ? COL.btn : COL.btnOff);
+    });
   }
 
   setHint(msg) {
@@ -341,8 +378,8 @@ class Cafe extends Phaser.Scene {
     }
   }
 
-  onButton(b) {  // only the Hire button reaches here
-    if (!this.canHireNow()) {
+  onButton(b) {  // Hire or Add-table; both only usable in normal play
+    if (this.tutPhase !== 'done') {
       const msg = {
         'd-build':'Build the 🥟 stall first',
         'd-run'  :'Let your helper serve these first…',
@@ -352,7 +389,18 @@ class Cafe extends Phaser.Scene {
       if (msg) this.flashHint(msg);
       return;
     }
-    this.hirePet();
+    if (b.id === 'table') this.tryAddTable();
+    else                  this.hirePet();
+  }
+
+  tryAddTable() {
+    if (this.tableCount >= MAX_TABLES) { this.flashHint('All ' + MAX_TABLES + ' tables open'); return; }
+    if (this.coins < TABLE_COST)       { this.flashHint('Need ' + TABLE_COST + ' 🪙'); return; }
+    this.coins -= TABLE_COST;
+    this.tableCount += 1;
+    this.refreshTables();
+    this.refreshHud(); this.refreshToolbar();
+    this.flashHint('Table opened — ' + this.tableCount + '/' + MAX_TABLES);
   }
 
   // ---------------- Building / staffing ----------------
@@ -502,8 +550,8 @@ class Cafe extends Phaser.Scene {
   trySpawn() {
     // Hold new arrivals while the player is mid build/hire step.
     if (this.tutPhase === 'b-build' || this.tutPhase === 'b-move') return;
-    const spot = this.waitSpots.find(s => !s.taken);
-    if (!spot) return; // shop full — they don't come in
+    const spot = this.waitSpots.slice(0, this.tableCount).find(s => !s.taken);
+    if (!spot) return; // every open table is taken — they don't come in
 
     this.spawnCount += 1;
     const type = this.scriptedType(this.spawnCount) || Phaser.Utils.Array.GetRandom(SLOT_TYPES);
