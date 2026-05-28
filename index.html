@@ -73,7 +73,7 @@ class Cafe extends Phaser.Scene {
     // Onboarding phases:
     //  intro    greeting; tap to continue
     //  d-build  customer #1 (dumpling) waits, build the 🥟 stall
-    //  d-run    customers #2-5 (dumpling) stream in and get served
+    //  d-run    customers #2-3 (dumpling) stream in and get served
     //  b-build  customer #6 (boba) waits, build the 🧋 stall
     //  b-staff  boba stall built, hire a helper to run it
     //  done     normal play
@@ -100,9 +100,9 @@ class Cafe extends Phaser.Scene {
 
   // ---------------- Onboarding ----------------
   scriptedType(n) {
-    if (n <= 5)  return 'dumpling';   // customers 1-5
-    if (n <= 10) return 'boba';       // customers 6-10
-    return null;                      // 11+ random
+    if (n <= 3) return 'dumpling';   // customers 1-3
+    if (n <= 6) return 'boba';       // customers 4-6
+    return null;                     // 7+ random
   }
 
   setPhase(p) { this.tutPhase = p; this.refreshBuildPads(); this.refreshToolbar(); }
@@ -153,7 +153,7 @@ class Cafe extends Phaser.Scene {
         st.pet = { speed: 1 }; this.petsFree -= 1;
         this.refreshStation(st); this.refreshHud();
       }
-      this.setPhase('d-run');   // dumpling rush (#2-5) begins; patience now ticks
+      this.setPhase('d-run');   // dumpling rush (#2-3) begins; patience now ticks
       this.startSpawnLoop();
     };
     if (emp) this.tweens.add({ targets: emp.cont, x: st.x, y: st.y + 30, duration: 550, ease:'Sine.InOut', onComplete: openShop });
@@ -172,7 +172,7 @@ class Cafe extends Phaser.Scene {
     this.setStepHint('Now hire a helper to make 🧋!\nTap “Hire 🐾”.');
   }
 
-  // Phase E: boba helper assigned — back to normal play (#7-10 boba, then random).
+  // Phase E: boba helper assigned — back to normal play (#5-6 boba, then random).
   finishBobaStep() {
     this.setPhase('done');
     this.setStepHint('');
@@ -416,8 +416,8 @@ class Cafe extends Phaser.Scene {
 
     this.spawnCount += 1;
     const type = this.scriptedType(this.spawnCount) || Phaser.Utils.Array.GetRandom(SLOT_TYPES);
-    // The 6th customer (first boba) kicks off the boba tutorial step.
-    const triggerBoba = (this.tutPhase === 'd-run' && this.spawnCount === 6);
+    // The 4th customer (first boba) kicks off the boba tutorial step.
+    const triggerBoba = (this.tutPhase === 'd-run' && this.spawnCount === 4);
     if (triggerBoba) this.setPhase('b-build');   // pause further arrivals immediately
 
     const cont = this.add.container(DOOR.x, DOOR.y).setDepth(20);
