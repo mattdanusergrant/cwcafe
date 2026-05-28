@@ -47,11 +47,11 @@ const COST = { dumpling:20, boba:30, pet:15 };
 const START_COINS = 20;
 const PATIENCE_MS  = 12000;
 const SPAWN_MS     = 2600;
-const WALK_MS      = 650;
+const WALK_MS      = 1300;
 
 // fixed station slots along the back, and customer waiting spots
 const SLOT_Y = 180;
-const SLOT_X = [78, 156, 234, 312];
+const SLOT_X = [78, 195, 312];
 const WAIT_Y = 510;
 const WAIT_X = [65, 130, 195, 260, 325];
 const DOOR   = { x: W/2, y: 826 };
@@ -202,17 +202,25 @@ class Cafe extends Phaser.Scene {
     const slot = this.slots[slotIndex];
     const accent = type === 'dumpling' ? COL.red : COL.pink;
     const cont = this.add.container(slot.x, slot.y).setDepth(10);
-    cont.add(this.add.rectangle(0, -28, 84, 48, COL.card).setStrokeStyle(3, accent));
-    cont.add(this.add.text(0, -28, ORDERS[type].emoji, { fontSize:'26px' }).setOrigin(0.5));
-    const petDot = this.add.circle(0, 22, 22, COL.btnOff).setStrokeStyle(3, accent);
+
+    // --- Station icon: a labeled stall showing the product it makes ---
+    cont.add(this.add.rectangle(0, -30, 86, 52, COL.card).setStrokeStyle(3, accent));
+    cont.add(this.add.rectangle(0, -53, 86, 12, accent));                 // sign strip
+    cont.add(this.add.text(0, -30, ORDERS[type].emoji, { fontSize:'30px' }).setOrigin(0.5));
+
+    // --- Worker icon: a pet that shows what it's doing ---
+    const petDot = this.add.circle(0, 26, 20, COL.btnOff).setStrokeStyle(3, accent);
     cont.add(petDot);
-    const petFace = this.add.text(0, 20, '', { fontSize:'22px' }).setOrigin(0.5);
+    const petFace = this.add.text(0, 24, '', { fontSize:'22px' }).setOrigin(0.5);
     cont.add(petFace);
-    const status = this.add.text(0, 50, '', { fontFamily:'system-ui,sans-serif', fontSize:'10px', color:hex(accent), fontStyle:'700' }).setOrigin(0.5);
+    const actionBubble = this.add.text(20, 12, '', { fontSize:'16px' }).setOrigin(0.5); // dish being made
+    cont.add(actionBubble);
+
+    const status = this.add.text(0, 58, '', { fontFamily:'system-ui,sans-serif', fontSize:'10px', color:hex(accent), fontStyle:'700' }).setOrigin(0.5);
     cont.add(status);
     const bar = this.add.graphics(); cont.add(bar);
 
-    const st = { type, slotIndex, x:slot.x, y:slot.y, accent, pet:null, busy:false, customer:null, cont, petDot, petFace, status, bar };
+    const st = { type, slotIndex, x:slot.x, y:slot.y, accent, pet:null, busy:false, customer:null, cont, petDot, petFace, actionBubble, status, bar, workTween:null };
     slot.station = st;
     this.stations.push(st);
     this.slotMarks[slotIndex].setVisible(false);
@@ -224,11 +232,12 @@ class Cafe extends Phaser.Scene {
   refreshStation(st) {
     if (st.pet) {
       st.petDot.setFillStyle(COL.tan);
-      st.petFace.setText(ORDERS[st.type].emoji);
-      if (!st.busy) st.status.setText('Ready');
+      st.petFace.setText('🐱');                 // worker shows up at the station
+      if (!st.busy) { st.status.setText('Ready'); st.actionBubble.setText(''); }
     } else {
       st.petDot.setFillStyle(COL.btnOff);
       st.petFace.setText('');
+      st.actionBubble.setText('');
       st.status.setText('needs 🐾');
     }
   }
@@ -253,7 +262,7 @@ class Cafe extends Phaser.Scene {
   }
 
   drawStationBar(st, p) {
-    const bw = 74, bh = 8, bx = -bw/2, by = 38;
+    const bw = 64, bh = 6, bx = -bw/2, by = 47;
     st.bar.clear();
     st.bar.fillStyle(COL.cream, 1).fillRoundedRect(bx, by, bw, bh, 4);
     if (p > 0) st.bar.fillStyle(st.accent, 1).fillRoundedRect(bx, by, bw*Phaser.Math.Clamp(p,0,1), bh, 4);
@@ -307,7 +316,7 @@ class Cafe extends Phaser.Scene {
     cu.patBar.clear();
     this.removeCustomer(cu);
     this.tweens.add({
-      targets: cu.cont, x: DOOR.x, y: DOOR.y + 40, alpha: 0, duration: 520, ease:'Sine.In',
+      targets: cu.cont, x: DOOR.x, y: DOOR.y + 40, alpha: 0, duration: 900, ease:'Sine.In',
       onComplete: () => cu.cont.destroy()
     });
   }
@@ -317,6 +326,8 @@ class Cafe extends Phaser.Scene {
     st.busy = true; st.customer = cu;
     cu.claimed = true; cu.bubble.setText('⏳'); cu.patBar.clear();
     st.status.setText('cooking…');
+    st.actionBubble.setText(ORDERS[st.type].emoji);   // worker is making this dish
+    st.workTween = this.tweens.add({ targets: st.petFace, y: 20, duration: 300, yoyo:true, repeat:-1, ease:'Sine.InOut' });
     const prog = { v: 0 };
     this.tweens.add({
       targets: prog, v: 1, duration: ORDERS[st.type].cookMs / st.pet.speed, ease:'Linear',
@@ -328,6 +339,8 @@ class Cafe extends Phaser.Scene {
   serve(st, cu) {
     st.busy = false; st.customer = null;
     this.drawStationBar(st, 0);
+    if (st.workTween) { st.workTween.stop(); st.workTween = null; st.petFace.y = 24; }
+    st.actionBubble.setText('');
     if (st.pet) st.status.setText('Ready');
 
     const alive = cu.state === 'waiting' && cu.cont.active;
