@@ -33,6 +33,7 @@ const COL = {
   green:    0x8FBF6F,
   brown:    0x5A453B,
   dim:      0xB6A488,
+  amber:    0xE0913B,
   btn:      0x7BA86B,
   btnOff:   0xC4BBA8,
 };
@@ -41,9 +42,11 @@ const hex = c => '#' + c.toString(16).padStart(6, '0');
 const ORDERS = {
   dumpling: { emoji:'🥟', value:5, cookMs:2500 },
   boba:     { emoji:'🧋', value:7, cookMs:3000 },
+  noodle:   { emoji:'🍜', value:9, cookMs:3500 },
 };
+const ACCENT = { dumpling: COL.red, boba: COL.pink, noodle: COL.amber };
 
-const COST = { dumpling:20, boba:30, pet:15 };
+const COST = { dumpling:20, boba:30, noodle:35, pet:15 };
 const START_COINS = 50;   // enough to build 🥟, then 🧋 + hire across the tutorial
 const PATIENCE_MS  = 12000;
 const SPAWN_MS     = 2600;
@@ -52,6 +55,7 @@ const WALK_MS      = 1300;
 // fixed station slots along the back, and customer waiting spots
 const SLOT_Y = 180;
 const SLOT_X = [78, 195, 312];
+const SLOT_TYPES = ['dumpling', 'boba', 'noodle'];  // each slot is locked to one recipe
 const WAIT_Y = 510;
 const WAIT_X = [65, 130, 195, 260, 325];
 const DOOR   = { x: W/2, y: 826 };
@@ -64,15 +68,16 @@ class Cafe extends Phaser.Scene {
     this.served = 0;
     this.lost = 0;
     this.petsFree = 1;            // start with one employee, hired but unassigned
-    this.buildPending = null;     // 'dumpling' | 'boba' | null
+    this.stepHint = '';           // the standing instruction shown in the hint pill
 
     // Onboarding phases:
-    //  d-build  customer #1 (dumpling) waits, build a 🥟 station
+    //  intro    greeting; tap to continue
+    //  d-build  customer #1 (dumpling) waits, build the 🥟 stall
     //  d-run    customers #2-5 (dumpling) stream in and get served
-    //  b-build  customer #6 (boba) waits, build a 🧋 station
+    //  b-build  customer #6 (boba) waits, build the 🧋 stall
     //  b-staff  boba stall built, hire a helper to run it
     //  done     normal play
-    this.tutPhase = 'd-build';
+    this.tutPhase = 'intro';
     this.spawnCount = 0;          // how many customers have spawned
     this.spawnStarted = false;    // is the recurring spawn loop running yet
     this.firstStation = null;     // the dumpling station (our speaking employee)
@@ -80,20 +85,18 @@ class Cafe extends Phaser.Scene {
     this.customers = [];
     this.stations = [];
     this.waitSpots = WAIT_X.map(x => ({ x, y: WAIT_Y, taken: null }));
-    this.slots = SLOT_X.map(x => ({ x, y: SLOT_Y, station: null }));
+    this.slots = SLOT_X.map((x, i) => ({ x, y: SLOT_Y, type: SLOT_TYPES[i], station: null, pad: null }));
 
     this.drawRoom();
     this.buildHud();
     this.makeSpeech();
     this.buildToolbar();
 
-    // Onboarding: one employee, no stations. The first customer arrives and the
-    // employee asks for a station; building it staffs them and opens the shop.
+    // Onboarding: one employee, no stations. Tap the greeting to begin; the first
+    // customer arrives and the employee asks you to build their stall.
     this.makeTutorialEmployee();
 
     this.input.on('pointerdown', (p) => this.handleTap(p.x, p.y));
-
-    this.time.delayedCall(900, () => this.trySpawn());  // customer #1
   }
 
   // ---------------- Onboarding ----------------
@@ -103,13 +106,34 @@ class Cafe extends Phaser.Scene {
     return null;                      // 11+ random
   }
 
+  setPhase(p) { this.tutPhase = p; this.refreshBuildPads(); this.refreshToolbar(); }
+
+  setStepHint(msg) { this.stepHint = msg || ''; this.setHint(this.stepHint); }
+
+  // Which recipe (if any) the player may build right now.
+  canBuildPhase(type) {
+    switch (this.tutPhase) {
+      case 'done':    return true;
+      case 'd-build': return type === 'dumpling';
+      case 'b-build': return type === 'boba';
+      default:        return false;   // intro, d-run, b-staff
+    }
+  }
+
   makeTutorialEmployee() {
     const x = W/2, y = 250;
     const cont = this.add.container(x, y).setDepth(30);
     cont.add(this.add.circle(0, 0, 27, COL.tan).setStrokeStyle(3, COL.brown));
     cont.add(this.add.text(0, 0, '🐱', { fontSize:'29px' }).setOrigin(0.5));
     this.tutEmployee = { cont, x, y };
-    this.speak(x, y - 60, 'Hi! I’m your helper 🐱');
+    this.speak(x, y - 64, 'Hi! I’m your helper 🐱\n( tap to continue )');
+  }
+
+  // First tap dismisses the greeting and brings in customer #1.
+  beginTutorial() {
+    this.silence();
+    this.setPhase('d-build');
+    this.trySpawn();   // customer #1
   }
 
   // Reusable speech bubble for whoever is talking (free employee, or a worker).
@@ -149,41 +173,41 @@ class Cafe extends Phaser.Scene {
   walkEmployeeToStation(st) {
     const emp = this.tutEmployee; this.tutEmployee = null;
     this.firstStation = st;
-    this.silence(); this.setHint('');
+    this.silence(); this.setStepHint('');
     const openShop = () => {
       if (emp) emp.cont.destroy();
       if (this.petsFree > 0 && !st.pet) {
         st.pet = { speed: 1 }; this.petsFree -= 1;
         this.refreshStation(st); this.refreshHud();
       }
-      this.tutPhase = 'd-run';   // dumpling rush (#2-5) begins; patience now ticks
+      this.setPhase('d-run');   // dumpling rush (#2-5) begins; patience now ticks
       this.startSpawnLoop();
     };
     if (emp) this.tweens.add({ targets: emp.cont, x: st.x, y: st.y + 30, duration: 550, ease:'Sine.InOut', onComplete: openShop });
     else openShop();
   }
 
-  // Phase C: the 6th customer (boba) has arrived; ask the player to build a boba stall.
+  // Phase C: the 6th customer (boba) has arrived; ask the player to build the boba stall.
   startBobaBuildStep() {
     const st = this.firstStation;
-    this.speak(st ? st.x : W/2, st ? st.y - 8 : 200, 'A 🧋 order — I only make 🥟!\nBuild a 🧋 station.');
-    this.setHint('Tap “Build 🧋”, then an empty slot');
+    this.speak(st ? st.x : W/2, st ? st.y - 8 : 200, 'A 🧋 order — I only make 🥟!\nBuild the 🧋 stall.');
+    this.setStepHint('Tap the 🧋 slot to build it');
   }
 
   // Phase D: boba stall built but empty; ask the player to hire a helper to run it.
   startBobaStaffStep(st) {
     this.bobaStation = st;
-    this.tutPhase = 'b-staff';
+    this.setPhase('b-staff');
     const f = this.firstStation;
     this.speak(f ? f.x : W/2, f ? f.y - 8 : 200, 'Now hire a helper\nto make 🧋! Tap “Hire 🐾”.');
-    this.setHint('Hire a helper for the 🧋 station');
+    this.setStepHint('Hire a helper for the 🧋 stall');
   }
 
   // Phase E: boba helper assigned — back to normal play (#7-10 boba, then random).
   finishBobaStep() {
-    this.tutPhase = 'done';
+    this.setPhase('done');
     this.silence();
-    this.setHint('');
+    this.setStepHint('');
   }
 
   // ---------------- Room ----------------
@@ -204,15 +228,40 @@ class Cafe extends Phaser.Scene {
     g.fillStyle(COL.tan, 0.55).fillRoundedRect(DOOR.x-40, H-54, 80, 42, 8); // mat
     g.fillStyle(COL.counter, 1).fillRoundedRect(24, 300, W-48, 26, 8); // counter band
 
-    // empty-slot markers
-    this.slotMarks = this.slots.map(s => {
-      const m = this.add.graphics().setDepth(1);
-      m.fillStyle(COL.dim, 0.18).fillRoundedRect(s.x-50, s.y-62, 100, 132, 14);
-      m.lineStyle(2, COL.dim, 0.5).strokeRoundedRect(s.x-50, s.y-62, 100, 132, 14);
-      return m;
-    });
+    // each empty slot shows a tappable "Build <recipe> <cost>" pad
+    this.slots.forEach(s => this.makeBuildPad(s));
     this.add.text(W/2, 268, 'kitchen', { fontFamily:'system-ui,sans-serif', fontSize:'12px', color:hex(COL.dim) }).setOrigin(0.5);
     this.add.text(W/2, 590, 'waiting area', { fontFamily:'system-ui,sans-serif', fontSize:'12px', color:hex(COL.dim) }).setOrigin(0.5);
+  }
+
+  // ---------------- Build pads (per-slot) ----------------
+  makeBuildPad(slot) {
+    const type = slot.type, accent = ACCENT[type];
+    const cont = this.add.container(slot.x, slot.y).setDepth(2);
+    const bg = this.add.graphics();
+    bg.fillStyle(accent, 0.10).fillRoundedRect(-50, -62, 100, 132, 14);
+    bg.lineStyle(2, accent, 0.7).strokeRoundedRect(-50, -62, 100, 132, 14);
+    cont.add(bg);
+    cont.add(this.add.text(0, -30, ORDERS[type].emoji, { fontSize:'34px' }).setOrigin(0.5).setAlpha(0.9));
+    cont.add(this.add.text(0, 12, 'Build', { fontFamily:'system-ui,sans-serif', fontSize:'14px', color:hex(accent), fontStyle:'700' }).setOrigin(0.5));
+    const costTxt = this.add.text(0, 36, '', { fontFamily:'system-ui,sans-serif', fontSize:'14px', color:hex(COL.brown), fontStyle:'700' }).setOrigin(0.5);
+    cont.add(costTxt);
+    const lock = this.add.text(36, -46, '🔒', { fontSize:'16px' }).setOrigin(0.5).setVisible(false);
+    cont.add(lock);
+    slot.pad = { cont, costTxt, lock, type };
+  }
+
+  refreshBuildPads() {
+    if (!this.slots) return;
+    this.slots.forEach(s => {
+      const pad = s.pad; if (!pad) return;
+      if (s.station) { pad.cont.setVisible(false); return; }
+      const affordable = this.coins >= COST[pad.type];
+      const active = this.canBuildPhase(pad.type);
+      pad.cont.setVisible(true).setAlpha(active ? 1 : 0.35);
+      pad.costTxt.setText(COST[pad.type] + ' 🪙').setColor(affordable ? hex(COL.brown) : hex(COL.red));
+      pad.lock.setVisible(!active);
+    });
   }
 
   // ---------------- HUD + toolbar ----------------
@@ -232,31 +281,28 @@ class Cafe extends Phaser.Scene {
 
   buildToolbar() {
     this.add.rectangle(W/2, 72, W, 48, COL.cream).setDepth(50);
-    this.buttons = [
-      { id:'dumpling', x:65,  label:()=>'Build 🥟', cost:()=>COST.dumpling },
-      { id:'boba',     x:195, label:()=>'Build 🧋', cost:()=>COST.boba },
-      { id:'pet',      x:325, label:()=>'Hire 🐾',  cost:()=>COST.pet },
-    ];
-    this.buttons.forEach(b => {
-      b.w = 120; b.h = 38; b.y = 72;
-      b.rect = this.add.rectangle(b.x, b.y, b.w, b.h, COL.btn).setStrokeStyle(2, COL.brown).setDepth(51);
-      b.txt = this.add.text(b.x, b.y, '', { fontFamily:'system-ui,sans-serif', fontSize:'15px', color:'#FFFFFF', fontStyle:'700' }).setOrigin(0.5).setDepth(52);
-    });
+    // Stations are built on their slots; the toolbar just hires helpers.
+    const b = { id:'pet', x:W/2, y:72, w:180, h:38, label:()=>'Hire 🐾', cost:()=>COST.pet };
+    b.rect = this.add.rectangle(b.x, b.y, b.w, b.h, COL.btn).setStrokeStyle(2, COL.brown).setDepth(51);
+    b.txt = this.add.text(b.x, b.y, '', { fontFamily:'system-ui,sans-serif', fontSize:'15px', color:'#FFFFFF', fontStyle:'700' }).setOrigin(0.5).setDepth(52);
+    this.hireBtn = b;
+    this.buttons = [b];
     this.refreshToolbar();
   }
 
   refreshHud() {
     this.coinLabel.setText('🪙 ' + this.coins);
     this.statLabel.setText('Served ' + this.served + '   Lost ' + this.lost + '   🐾 free ' + this.petsFree);
+    this.refreshBuildPads();
   }
 
+  canHireNow() { return this.tutPhase === 'done' || this.tutPhase === 'b-staff'; }
+
   refreshToolbar() {
-    this.buttons.forEach(b => {
-      const affordable = this.coins >= b.cost();
-      const active = this.buildPending === b.id;
-      b.rect.setFillStyle(active ? COL.brown : (affordable ? COL.btn : COL.btnOff));
-      b.txt.setText(b.label() + ' ' + b.cost());
-    });
+    const b = this.hireBtn; if (!b) return;
+    const usable = this.canHireNow() && this.coins >= b.cost();
+    b.rect.setFillStyle(usable ? COL.btn : COL.btnOff);
+    b.txt.setText(b.label() + ' ' + b.cost());
   }
 
   setHint(msg) {
@@ -275,52 +321,47 @@ class Cafe extends Phaser.Scene {
   }
 
   handleTap(px, py) {
-    // toolbar buttons
+    // intro greeting: any tap continues
+    if (this.tutPhase === 'intro') { this.beginTutorial(); return; }
+    // toolbar (hire) button
     for (const b of this.buttons) {
       if (this.inBox(px, py, b, b.w/2, b.h/2)) { this.onButton(b); return; }
     }
-    // placing a station into a slot
-    if (this.buildPending) {
-      for (let i = 0; i < this.slots.length; i++) {
-        if (!this.slots[i].station && this.inBox(px, py, this.slots[i], 50, 66)) {
-          this.tryBuild(i, this.buildPending);
-          return;
-        }
-      }
-      this.buildPending = null; this.setHint(''); this.refreshToolbar(); return;
+    // tap an empty slot to build its locked-in station
+    for (let i = 0; i < this.slots.length; i++) {
+      if (!this.slots[i].station && this.inBox(px, py, this.slots[i], 50, 66)) { this.tryBuildSlot(i); return; }
     }
   }
 
-  onButton(b) {
-    // During onboarding, only the currently-prompted action is allowed.
-    if (this.tutPhase !== 'done') {
-      const allow = { 'd-build':'dumpling', 'b-build':'boba', 'b-staff':'pet' }[this.tutPhase];
-      if (b.id !== allow) {
-        const msg = {
-          'd-build':'First, build a 🥟 station',
-          'd-run'  :'Let your helper serve these first…',
-          'b-build':'Build a 🧋 station first',
-          'b-staff':'Hire a helper for boba',
-        }[this.tutPhase];
-        this.flashHint(msg); return;
-      }
+  onButton(b) {  // only the Hire button reaches here
+    if (!this.canHireNow()) {
+      const msg = {
+        'd-build':'Build the 🥟 stall first',
+        'd-run'  :'Let your helper serve these first…',
+        'b-build':'Build the 🧋 stall first',
+      }[this.tutPhase] || '';
+      if (msg) this.flashHint(msg);
+      return;
     }
-    if (b.id === 'pet') { this.hirePet(); return; }
-    // toggle build mode for a station type
-    if (this.buildPending === b.id) { this.buildPending = null; this.setHint(''); }
-    else if (this.coins >= b.cost()) {
-      if (this.slots.every(s => s.station)) { this.flashHint('No empty slots'); return; }
-      this.buildPending = b.id; this.setHint('Tap an empty kitchen slot');
-    } else { this.flashHint('Need ' + b.cost() + ' 🪙'); }
-    this.refreshToolbar();
+    this.hirePet();
   }
 
   // ---------------- Building / staffing ----------------
-  tryBuild(slotIndex, type) {
-    if (this.coins < COST[type]) { this.flashHint('Not enough 🪙'); return; }
+  tryBuildSlot(i) {
+    const slot = this.slots[i], type = slot.type;
+    if (!this.canBuildPhase(type)) {
+      const msg = {
+        'd-build':'Build the 🥟 stall first',
+        'd-run'  :'Let your helper serve these first…',
+        'b-build':'Build the 🧋 stall first',
+        'b-staff':'Hire a helper first',
+      }[this.tutPhase] || 'Locked for now';
+      this.flashHint(msg); return;
+    }
+    if (this.coins < COST[type]) { this.flashHint('Need ' + COST[type] + ' 🪙'); return; }
     this.coins -= COST[type];
-    const st = this.placeStation(slotIndex, type);
-    this.buildPending = null; this.setHint('');
+    const st = this.placeStation(i, type);
+    this.setStepHint('');
     if (this.tutPhase === 'd-build')      this.walkEmployeeToStation(st); // employee mans it, shop opens
     else if (this.tutPhase === 'b-build') this.startBobaStaffStep(st);    // built, now prompt to hire
     else this.autoStaff();
@@ -329,7 +370,7 @@ class Cafe extends Phaser.Scene {
 
   placeStation(slotIndex, type) {
     const slot = this.slots[slotIndex];
-    const accent = type === 'dumpling' ? COL.red : COL.pink;
+    const accent = ACCENT[type];
     const cont = this.add.container(slot.x, slot.y).setDepth(10);
 
     // --- Station icon: a labeled stall showing the product it makes ---
@@ -352,7 +393,7 @@ class Cafe extends Phaser.Scene {
     const st = { type, slotIndex, x:slot.x, y:slot.y, accent, pet:null, busy:false, customer:null, cont, petDot, petFace, actionBubble, status, bar, workTween:null };
     slot.station = st;
     this.stations.push(st);
-    this.slotMarks[slotIndex].setVisible(false);
+    if (slot.pad) slot.pad.cont.setVisible(false);
     this.drawStationBar(st, 0);
     this.refreshStation(st);
     return st;
@@ -406,10 +447,10 @@ class Cafe extends Phaser.Scene {
     if (!spot) return; // shop full — they don't come in
 
     this.spawnCount += 1;
-    const type = this.scriptedType(this.spawnCount) || (Math.random() < 0.5 ? 'dumpling' : 'boba');
+    const type = this.scriptedType(this.spawnCount) || Phaser.Utils.Array.GetRandom(SLOT_TYPES);
     // The 6th customer (first boba) kicks off the boba tutorial step.
     const triggerBoba = (this.tutPhase === 'd-run' && this.spawnCount === 6);
-    if (triggerBoba) this.tutPhase = 'b-build';   // pause further arrivals immediately
+    if (triggerBoba) this.setPhase('b-build');   // pause further arrivals immediately
 
     const cont = this.add.container(DOOR.x, DOOR.y).setDepth(20);
     cont.add(this.add.circle(0, 0, 27, COL.card).setStrokeStyle(3, COL.dim));
@@ -432,8 +473,8 @@ class Cafe extends Phaser.Scene {
         this.drawPatience(cu);
         if (this.tutPhase === 'd-build' && this.tutEmployee) {
           const e = this.tutEmployee;
-          this.speak(e.x, e.y - 60, 'A customer! I need a 🥟 station.\nTap “Build 🥟”, then a slot.');
-          this.setHint('Build a 🥟 station');
+          this.speak(e.x, e.y - 64, 'A customer! I need a 🥟 stall.\nTap the 🥟 slot to build it.');
+          this.setStepHint('Tap the 🥟 slot to build it');
         } else if (triggerBoba) {
           this.startBobaBuildStep();
         }
@@ -515,7 +556,7 @@ class Cafe extends Phaser.Scene {
 
   flashHint(msg) {
     this.setHint(msg);
-    this.time.delayedCall(1300, () => { if (this.hint.text === msg) this.setHint(this.buildPending ? 'Tap an empty kitchen slot' : ''); });
+    this.time.delayedCall(1300, () => { if (this.hint.text === msg) this.setHint(this.stepHint || ''); });
   }
 
   // ---------------- main loop ----------------
