@@ -81,8 +81,9 @@ const SPAWN_MS     = 2600;
 const WALK_MS      = 1300;
 
 // fixed station slots along the back, and customer waiting spots
-const SLOT_Y = 180;
+const SLOT_Y = 210;
 const SLOT_X = [78, 195, 312];
+const PANTRY_Y = 123;   // ingredient chips sit here, directly above each station column
 const SLOT_TYPES = ['dumpling', 'boba', 'noodle'];  // each slot is locked to one recipe
 const ORDERABLE_TYPES = SLOT_TYPES.filter(t => !LOCKED_TYPES.includes(t));  // what customers may ask for
 const WAIT_Y = 510;
@@ -312,7 +313,6 @@ class Cafe extends Phaser.Scene {
 
     // each empty slot shows a tappable "Build <recipe> <cost>" pad
     this.slots.forEach(s => this.makeBuildPad(s));
-    this.add.text(W/2, 268, 'kitchen', { fontFamily:'system-ui,sans-serif', fontSize:'12px', color:hex(COL.dim) }).setOrigin(0.5);
     this.add.text(W/2, 590, 'waiting area', { fontFamily:'system-ui,sans-serif', fontSize:'12px', color:hex(COL.dim) }).setOrigin(0.5);
 
     // little tables under each waiting spot; faint ones are not open yet
@@ -337,16 +337,16 @@ class Cafe extends Phaser.Scene {
   }
 
   // ---------------- Pantry (shared ingredients) ----------------
+  // Each ingredient is shown as a tappable chip directly above the station that uses it.
   buildPantry() {
-    this.pantryCard  = this.add.graphics().setDepth(50);
-    this.pantryTitle = this.add.text(W/2, 338, '', { fontFamily:'system-ui,sans-serif', fontSize:'11px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5).setDepth(51);
     this.pantryChips = {};
     ['dough','tea','broth'].forEach(ing => {
-      const cont = this.add.container(0, 362).setDepth(51).setVisible(false);
-      const box  = this.add.rectangle(0, 0, 92, 32, COL.cream).setStrokeStyle(2, COL.dim);
-      const txt  = this.add.text(0, 0, '', { fontFamily:'system-ui,sans-serif', fontSize:'16px', color:hex(COL.brown), fontStyle:'700' }).setOrigin(0.5);
-      cont.add([box, txt]);
-      this.pantryChips[ing] = { ing, cont, box, txt, x:0, y:362, halfW:46, halfH:16 };
+      const cont = this.add.container(0, PANTRY_Y).setDepth(51).setVisible(false);
+      const box  = this.add.rectangle(0, 0, 78, 32, COL.card).setStrokeStyle(2, COL.dim);
+      const txt  = this.add.text(0, -5, '', { fontFamily:'system-ui,sans-serif', fontSize:'15px', color:hex(COL.brown), fontStyle:'700' }).setOrigin(0.5);
+      const cap  = this.add.text(0, 10, '', { fontFamily:'system-ui,sans-serif', fontSize:'9px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5);
+      cont.add([box, txt, cap]);
+      this.pantryChips[ing] = { ing, cont, box, txt, cap, x:0, y:PANTRY_Y, halfW:39, halfH:16 };
     });
     this.pantryActive = [];
     this.refreshPantry();
@@ -360,26 +360,18 @@ class Cafe extends Phaser.Scene {
 
   refreshPantry() {
     if (!this.pantryChips) return;
-    const ings = this.activePantry();
     Object.values(this.pantryChips).forEach(ch => ch.cont.setVisible(false));
-    this.pantryCard.clear();
     this.pantryActive = [];
-    if (ings.length === 0) { this.pantryTitle.setVisible(false); return; }
-
-    const cardW = 300, cardH = 56, cx = W/2, cy = 354;
-    this.pantryCard.fillStyle(COL.card, 0.92).fillRoundedRect(cx-cardW/2, cy-cardH/2, cardW, cardH, 14);
-    this.pantryCard.lineStyle(2, COL.dim, 1).strokeRoundedRect(cx-cardW/2, cy-cardH/2, cardW, cardH, 14);
-    this.pantryTitle.setVisible(true).setText('Pantry — tap to restock  (+' + RESTOCK_AMOUNT + '  ' + RESTOCK_COST + '💰)').setPosition(cx, cy-15);
-
-    const gap = cardW / ings.length;
-    ings.forEach((ing, i) => {
+    this.activePantry().forEach(ing => {
+      const st = this.stations.find(s => RECIPE_ING[s.type] === ing);
+      if (!st) return;
       const ch = this.pantryChips[ing];
-      const x = cx - cardW/2 + gap*(i + 0.5);
-      ch.cont.setVisible(true).setPosition(x, cy+9);
-      ch.x = x; ch.y = cy+9;
+      ch.cont.setVisible(true).setPosition(st.x, PANTRY_Y);
+      ch.x = st.x; ch.y = PANTRY_Y;
       const stock = this.pantry[ing];
       let col = COL.brown; if (stock === 0) col = COL.red; else if (stock <= 2) col = COL.amber;
       ch.txt.setText(INGREDIENTS[ing].emoji + ' ' + stock).setColor(hex(col));
+      ch.cap.setText('↺ +' + RESTOCK_AMOUNT + ' · ' + RESTOCK_COST + '💰');
       ch.box.setStrokeStyle(2, stock === 0 ? COL.red : COL.dim);
       this.pantryActive.push(ch);
     });
