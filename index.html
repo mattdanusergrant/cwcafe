@@ -91,9 +91,9 @@ const WAIT_X = [65, 130, 195, 260, 325];   // up to 5 table positions
 const TABLE_COST    = 100;
 const TABLE_UNLOCKED = [2];   // WAIT_X indices buyable now (the middle); the rest are locked for a future update
 const QUEUE_LEN = 3;          // how many upcoming customers wait in the visible line
-const QUEUE_Y   = 700;
-const QUEUE_X0  = 150;        // x of the front of the line
-const QUEUE_DX  = 45;         // spacing between queued customers
+const QUEUE_X   = 195;        // the line's column
+const QUEUE_Y0  = 660;        // front of the line (nearest the café)
+const QUEUE_DY  = 46;         // vertical spacing back toward the door
 const DOOR   = { x: W/2, y: 826 };
 
 class Cafe extends Phaser.Scene {
@@ -1131,14 +1131,14 @@ class Cafe extends Phaser.Scene {
   buildQueue() {
     this.queue = [];     // upcoming customers waiting in line (each {type, cont})
     this.genCount = 0;   // how many customers have been generated into the queue
-    this.queueLabel = this.add.text(W/2, 736, 'next in line ↑', { fontFamily:'system-ui,sans-serif', fontSize:'11px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5).setDepth(18).setVisible(false);
+    this.queueLabel = this.add.text(QUEUE_X, QUEUE_Y0 - 34, 'next in line ↑', { fontFamily:'system-ui,sans-serif', fontSize:'11px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5).setDepth(18).setVisible(false);
   }
 
   // Generate one upcoming customer (with its order) at the back of the line.
   queueCustomer() {
     this.genCount += 1;
     const type = this.scriptedType(this.genCount) || Phaser.Utils.Array.GetRandom(ORDERABLE_TYPES);
-    const cont = this.add.container(QUEUE_X0 + QUEUE_LEN*QUEUE_DX, QUEUE_Y).setDepth(18).setAlpha(0);
+    const cont = this.add.container(QUEUE_X, QUEUE_Y0 + QUEUE_LEN*QUEUE_DY).setDepth(18).setAlpha(0);
     cont.add(this.add.circle(0, 0, 16, COL.card).setStrokeStyle(2, COL.dim));
     cont.add(this.add.text(0, 0, '🙂', { fontSize:'17px' }).setOrigin(0.5));
     cont.add(this.add.text(0, -23, ORDERS[type].emoji, { fontSize:'15px' }).setOrigin(0.5));
@@ -1154,7 +1154,7 @@ class Cafe extends Phaser.Scene {
 
   layoutQueue() {
     this.queueLabel.setVisible(this.queue.length > 0);
-    this.queue.forEach((q, i) => this.tweens.add({ targets: q.cont, x: QUEUE_X0 + i*QUEUE_DX, duration: 250, ease:'Sine.Out' }));
+    this.queue.forEach((q, i) => this.tweens.add({ targets: q.cont, x: QUEUE_X, y: QUEUE_Y0 + i*QUEUE_DY, duration: 250, ease:'Sine.Out' }));
   }
 
   trySpawn() {
