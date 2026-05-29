@@ -235,6 +235,11 @@ class Cafe extends Phaser.Scene {
 
   // ----- Setup: a strict 5-step sequence, one action enabled at a time -----
   builtTables()     { return this.waitSpots.filter(s => s.state === 'built').length; }
+  // Open locked table spots for purchase (e.g. after the grand opening).
+  unlockTables(indices) {
+    indices.forEach(i => { if (this.waitSpots[i] && this.waitSpots[i].state === 'locked') this.waitSpots[i].state = 'available'; });
+    this.refreshTables();
+  }
   dumplingStaffed() { const st = this.getStation('dumpling'); return !!(st && this.activeSlots(st).some(sl => sl.pet)); }
 
   // The current setup step (0..4); each step's action is enabled only on its turn.
@@ -246,7 +251,8 @@ class Cafe extends Phaser.Scene {
     return 4;                                     // open the store
   }
   setupComplete() { return this.currentSetupStep() >= 4; }
-  tableBuyable()  { return this.tutPhase === 'setup' && this.currentSetupStep() === 3; }
+  // Buying a table is allowed in free play, and during setup only on the table step.
+  tableBuyable()  { return this.tutPhase !== 'setup' || this.currentSetupStep() === 3; }
 
   setupHint() {
     return [
@@ -692,7 +698,7 @@ class Cafe extends Phaser.Scene {
     for (const s of this.waitSpots) {
       if (!this.inBox(px, py, { x:s.x, y:s.y + 20 }, 30, 50)) continue;
       if (s.state === 'available') {
-        if (this.tutPhase !== 'setup' || this.tableBuyable()) this.tryBuyTable(s);
+        if (this.tableBuyable()) this.tryBuyTable(s);
         else this.flashHint(this.setupHint());   // not the table's turn yet
         return;
       }
@@ -840,7 +846,8 @@ class Cafe extends Phaser.Scene {
     } else if (this.tutPhase === 'h-hire') {           // tutorial complete — cushion before wages start
       this.setPhase('done'); this.setStepHint('');
       this.coins += GRAND_OPENING_BONUS;
-      msg = 'Hired ' + w.emoji + '!  +' + GRAND_OPENING_BONUS + ' 💰 grand-opening bonus.\nPlace them on a stall — note: staff now draw a wage.';
+      this.unlockTables([1, 3]);                       // tables 2 & 4 (the middle is table 3) open for purchase
+      msg = 'Hired ' + w.emoji + '!  +' + GRAND_OPENING_BONUS + ' 💰 grand-opening bonus.\nMore tables unlocked — tap a 🪑 to add seating. Staff now draw a wage.';
     }
     this.refreshHud(); this.refreshToolbar();
     this.flashHint(msg, this.tutPhase === 'done' ? 4200 : 1300);
