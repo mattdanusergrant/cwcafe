@@ -143,7 +143,7 @@ class Cafe extends Phaser.Scene {
     this.buildPantry();
     this.buildQuestTracker();
     this.buildOpenButton();
-    this.buildAssignPrompt();
+    this.buildTipBubble();
     this.refreshQuests();
 
     this.input.on('pointerdown', (p) => this.handleTap(p.x, p.y));
@@ -195,7 +195,7 @@ class Cafe extends Phaser.Scene {
     return null;                     // 7+ random
   }
 
-  setPhase(p) { this.tutPhase = p; this.refreshBuildPads(); this.refreshToolbar(); this.refreshQuests(); }
+  setPhase(p) { this.tutPhase = p; this.refreshBuildPads(); this.refreshToolbar(); this.refreshQuests(); this.updateTutorialTip(); }
 
   setStepHint(msg) { this.stepHint = msg || ''; this.setHint(this.stepHint); }
 
@@ -270,7 +270,7 @@ class Cafe extends Phaser.Scene {
     if (this.tutPhase !== 'setup') return;
     this.refreshQuests(); this.refreshToolbar(); this.refreshBuildPads(); this.refreshTables();
     if (this.setupComplete()) { this.setPhase('open-ready'); this.showOpenButton(true); }
-    this.updateAssignPrompt();   // show/hide the "tap to assign" bubble at the slot
+    this.updateTutorialTip();   // show/hide the step's anchored bubble
   }
 
   // The OPEN THE STORE button — pressed once; customers then flow forever.
@@ -409,28 +409,41 @@ class Cafe extends Phaser.Scene {
     }
   }
 
-  // A speech bubble that sits at the 🥟 worker slot during the "assign" step,
-  // staying until the helper is actually assigned.
-  buildAssignPrompt() {
-    this.assignPrompt = this.add.container(0, 0).setDepth(57).setVisible(false);
-    this.assignPromptBg = this.add.graphics();
-    this.assignPromptTxt = this.add.text(0, 0, '', { fontFamily:'system-ui,sans-serif', fontSize:'12px', color:hex(COL.brown), fontStyle:'700' }).setOrigin(0.5);
-    this.assignPrompt.add([this.assignPromptBg, this.assignPromptTxt]);
+  // A reusable speech bubble that anchors at a UI element during a tutorial step
+  // and stays until the step is done. Tail direction: 'up' or 'left'.
+  buildTipBubble() {
+    this.tip = this.add.container(0, 0).setDepth(57).setVisible(false);
+    this.tipBg = this.add.graphics();
+    this.tipTxt = this.add.text(0, 0, '', { fontFamily:'system-ui,sans-serif', fontSize:'12px', color:hex(COL.brown), fontStyle:'700' }).setOrigin(0.5);
+    this.tip.add([this.tipBg, this.tipTxt]);
   }
 
-  updateAssignPrompt() {
-    const st = this.getStation('dumpling');
-    const show = this.tutPhase === 'setup' && this.currentSetupStep() === 2 && st;
-    if (!show) { this.assignPrompt.setVisible(false); return; }
-    const slot = this.activeSlots(st)[0];
-    const txt = this.assignPromptTxt; txt.setText('Tap to assign 👆');
-    const w = txt.width + 22, h = txt.height + 12, bg = this.assignPromptBg;
+  showTip(text, x, y, dir) {
+    const txt = this.tipTxt; txt.setText(text);
+    const w = txt.width + 22, h = txt.height + 12, bg = this.tipBg;
     bg.clear();
     bg.fillStyle(COL.card, 0.97).fillRoundedRect(-w/2, -h/2, w, h, 10);
-    bg.fillStyle(COL.card, 0.97).fillTriangle(-8, -h/2 + 2, 8, -h/2 + 2, 0, -h/2 - 9);   // tail points up to the slot
+    if (dir === 'up')   bg.fillStyle(COL.card, 0.97).fillTriangle(-8, -h/2 + 2, 8, -h/2 + 2, 0, -h/2 - 9);
+    if (dir === 'left') bg.fillStyle(COL.card, 0.97).fillTriangle(-w/2 + 2, -7, -w/2 + 2, 7, -w/2 - 9, 0);
     bg.lineStyle(2, COL.brown, 1).strokeRoundedRect(-w/2, -h/2, w, h, 10);
-    bg.lineBetween(-8, -h/2, 0, -h/2 - 9); bg.lineBetween(8, -h/2, 0, -h/2 - 9);
-    this.assignPrompt.setPosition(slot.sx, slot.sy + 36).setVisible(true);
+    if (dir === 'up')   { bg.lineBetween(-8, -h/2, 0, -h/2 - 9); bg.lineBetween(8, -h/2, 0, -h/2 - 9); }
+    if (dir === 'left') { bg.lineBetween(-w/2, -7, -w/2 - 9, 0); bg.lineBetween(-w/2, 7, -w/2 - 9, 0); }
+    this.tip.setPosition(x, y).setVisible(true);
+  }
+  hideTip() { if (this.tip) this.tip.setVisible(false); }
+
+  // Anchor the tip to whatever action the current tutorial step needs.
+  updateTutorialTip() {
+    if (!this.tip) return;
+    const dump = this.getStation('dumpling');
+    if (this.tutPhase === 'setup' && this.currentSetupStep() === 2 && dump) {
+      const slot = this.activeSlots(dump)[0];
+      this.showTip('Tap to assign 👆', slot.sx, slot.sy + 36, 'up');     // points up to the worker slot
+    } else if (this.tutPhase === 'd-supply' && dump) {
+      this.showTip('👈 Tap 🌾 to supply', dump.x + 100, PANTRY_Y, 'left'); // points left to the dough chip
+    } else {
+      this.hideTip();
+    }
   }
 
   // ---------------- Room ----------------
