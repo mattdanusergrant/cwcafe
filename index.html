@@ -143,6 +143,7 @@ class Cafe extends Phaser.Scene {
     this.buildPantry();
     this.buildQuestTracker();
     this.buildOpenButton();
+    this.buildAssignPrompt();
     this.refreshQuests();
 
     this.input.on('pointerdown', (p) => this.handleTap(p.x, p.y));
@@ -269,6 +270,7 @@ class Cafe extends Phaser.Scene {
     if (this.tutPhase !== 'setup') return;
     this.refreshQuests(); this.refreshToolbar(); this.refreshBuildPads(); this.refreshTables();
     if (this.setupComplete()) { this.setPhase('open-ready'); this.showOpenButton(true); }
+    this.updateAssignPrompt();   // show/hide the "tap to assign" bubble at the slot
   }
 
   // The OPEN THE STORE button — pressed once; customers then flow forever.
@@ -405,6 +407,30 @@ class Cafe extends Phaser.Scene {
       this.openBtn.tween.stop(); this.openBtn.tween = null;
       this.openBtn.rect.setScale(1); this.openBtn.txt.setScale(1);
     }
+  }
+
+  // A speech bubble that sits at the 🥟 worker slot during the "assign" step,
+  // staying until the helper is actually assigned.
+  buildAssignPrompt() {
+    this.assignPrompt = this.add.container(0, 0).setDepth(57).setVisible(false);
+    this.assignPromptBg = this.add.graphics();
+    this.assignPromptTxt = this.add.text(0, 0, '', { fontFamily:'system-ui,sans-serif', fontSize:'12px', color:hex(COL.brown), fontStyle:'700' }).setOrigin(0.5);
+    this.assignPrompt.add([this.assignPromptBg, this.assignPromptTxt]);
+  }
+
+  updateAssignPrompt() {
+    const st = this.getStation('dumpling');
+    const show = this.tutPhase === 'setup' && this.currentSetupStep() === 2 && st;
+    if (!show) { this.assignPrompt.setVisible(false); return; }
+    const slot = this.activeSlots(st)[0];
+    const txt = this.assignPromptTxt; txt.setText('Tap to assign 👆');
+    const w = txt.width + 22, h = txt.height + 12, bg = this.assignPromptBg;
+    bg.clear();
+    bg.fillStyle(COL.card, 0.97).fillRoundedRect(-w/2, -h/2, w, h, 10);
+    bg.fillStyle(COL.card, 0.97).fillTriangle(-8, -h/2 + 2, 8, -h/2 + 2, 0, -h/2 - 9);   // tail points up to the slot
+    bg.lineStyle(2, COL.brown, 1).strokeRoundedRect(-w/2, -h/2, w, h, 10);
+    bg.lineBetween(-8, -h/2, 0, -h/2 - 9); bg.lineBetween(8, -h/2, 0, -h/2 - 9);
+    this.assignPrompt.setPosition(slot.sx, slot.sy + 36).setVisible(true);
   }
 
   // ---------------- Room ----------------
@@ -841,8 +867,8 @@ class Cafe extends Phaser.Scene {
     const w = this.addWorker();                        // joins the idle pool
     let msg = 'Hired ' + w.emoji + '! Tap a stall to place them';
     if (this.tutPhase === 'setup') {                   // next step: assign them to the 🥟 stall
-      this.checkSetup();
-      msg = 'Hired ' + w.emoji + '! Now tap the 🥟 stall’s worker slot to assign them.';
+      this.checkSetup();                               // shows the persistent "Tap to assign" bubble at the slot
+      msg = 'Hired ' + w.emoji + '!';
     } else if (this.tutPhase === 'h-hire') {           // tutorial complete — cushion before wages start
       this.setPhase('done'); this.setStepHint('');
       this.coins += GRAND_OPENING_BONUS;
