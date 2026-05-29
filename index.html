@@ -399,10 +399,34 @@ class Cafe extends Phaser.Scene {
   // A reusable speech bubble that anchors at a UI element during a tutorial step
   // and stays until the step is done. Tail direction: 'up' or 'left'.
   buildTipBubble() {
+    this.hl = this.add.graphics().setDepth(56);   // pulsing highlight rings (tutorial + demand)
+    this.tutHL = null;                            // shape highlighted for the current tutorial step
     this.tip = this.add.container(0, 0).setDepth(57).setVisible(false);
     this.tipBg = this.add.graphics();
     this.tipTxt = this.add.text(0, 0, '', { fontFamily:'system-ui,sans-serif', fontSize:'12px', color:hex(COL.brown), fontStyle:'700', align:'center', wordWrap:{ width: 188 } }).setOrigin(0.5);
     this.tip.add([this.tipBg, this.tipTxt]);
+  }
+
+  // Pulsing rings: the current tutorial target, plus empty slots with a waiting customer.
+  drawHighlights(time) {
+    if (!this.hl) return;
+    const g = this.hl; g.clear();
+    const t = 0.5 + 0.5 * Math.sin(time / 260);
+    const lw = 3 + 2 * t, a = 0.35 + 0.5 * t;
+    if (this.tutHL) this.strokeHL(this.tutHL, COL.btn, a, lw);          // tutorial: green "tap here"
+    if (this.tutPhase === 'done') {                                    // free play: red "staff me"
+      for (const st of this.stations) {
+        if (!this.customers.some(c => c.state === 'waiting' && !c.claimed && c.type === st.type)) continue;
+        for (const sl of this.activeSlots(st)) if (!sl.pet) this.strokeHL({ kind:'circle', x:sl.sx, y:sl.sy, r:17 }, COL.red, a, lw);
+      }
+    }
+  }
+
+  strokeHL(s, color, alpha, lw) {
+    const g = this.hl;
+    g.lineStyle(lw, color, alpha);
+    if (s.kind === 'circle') g.strokeCircle(s.x, s.y, s.r);
+    else g.strokeRoundedRect(s.x - s.w/2, s.y - s.h/2, s.w, s.h, 12);
   }
 
   showTip(text, x, y, dir) {
@@ -430,10 +454,12 @@ class Cafe extends Phaser.Scene {
     const dump = this.getStation('dumpling'), boba = this.getStation('boba');
     const hiring = (ph === 'setup' && step === 1) || ph === 'h-hire';
     this.pulseHire(hiring);   // draw the eye to the Hire button on both hire steps
+    this.tutHL = null;
 
     if (ph === 'setup' && step === 0) {                       // build the 🥟 stall
       const pad = this.slots[0];
       this.showTip('Let’s open! Build a 🥟 stall 👆', pad.x, pad.y + 62, 'up');
+      this.tutHL = { kind:'rect', x:pad.x, y:pad.y + 4, w:106, h:138 };
     } else if (ph === 'setup' && step === 1) {                // hire the first helper
       this.showTip('Hire a helper! 🐾', 288, 116, 'up');
     } else if (ph === 'h-hire') {                             // hire the second helper
@@ -441,17 +467,22 @@ class Cafe extends Phaser.Scene {
     } else if (ph === 'setup' && step === 2 && dump) {        // assign the helper
       const slot = this.activeSlots(dump)[0];
       this.showTip('Put them to work 👆', slot.sx, slot.sy + 40, 'up');
+      this.tutHL = { kind:'circle', x:slot.sx, y:slot.sy, r:18 };
     } else if (ph === 'setup' && step === 3) {                // buy the (middle) table
       const t = this.waitSpots[2];
       this.showTip('Guests need a seat! 👇', t.x, t.y + 6, 'down');
+      this.tutHL = { kind:'rect', x:t.x, y:t.y + 38, w:54, h:32 };
     } else if (ph === 'd-supply' && dump) {                   // supply the 🥟 stall (dough chip)
       this.showTip('Out of dough! Tap 🌾 👈', dump.x + 108, PANTRY_Y, 'left');
+      this.tutHL = { kind:'rect', x:dump.x, y:PANTRY_Y, w:84, h:38 };
     } else if (ph === 'b-build') {                            // build the 🧋 stall
       const pad = this.slots[1];
       this.showTip('A 🧋 order! Build it 👆', pad.x, pad.y + 62, 'up');
+      this.tutHL = { kind:'rect', x:pad.x, y:pad.y + 4, w:106, h:138 };
     } else if (ph === 'b-move' && boba) {                     // staff the 🧋 stall
       const slot = this.activeSlots(boba)[0];
       this.showTip('Move a helper to 🧋 👆', slot.sx, slot.sy + 40, 'up');
+      this.tutHL = { kind:'circle', x:slot.sx, y:slot.sy, r:18 };
     } else {
       this.hideTip();
     }
@@ -1191,6 +1222,7 @@ class Cafe extends Phaser.Scene {
     this.payWages(delta);
     this.runStations();
     this.tickPatience(delta);
+    this.drawHighlights(time);
   }
 
   // Continuous wage drain (only once the tutorial is fully done). Coins never go
