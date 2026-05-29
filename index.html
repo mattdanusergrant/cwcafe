@@ -90,6 +90,10 @@ const WAIT_Y = 510;
 const WAIT_X = [65, 130, 195, 260, 325];   // up to 5 table positions
 const TABLE_COST    = 100;
 const TABLE_UNLOCKED = [2];   // WAIT_X indices buyable now (the middle); the rest are locked for a future update
+const QUEUE_LEN = 3;          // how many upcoming customers wait in the visible line
+const QUEUE_Y   = 700;
+const QUEUE_X0  = 150;        // x of the front of the line
+const QUEUE_DX  = 45;         // spacing between queued customers
 const DOOR   = { x: W/2, y: 826 };
 
 class Cafe extends Phaser.Scene {
@@ -115,6 +119,7 @@ class Cafe extends Phaser.Scene {
     this.picker = null;           // open worker-picker overlay, if any
     this.menu = null;             // open station-menu overlay, if any
     this.confirm = null;          // open confirmation dialog, if any
+    this.grandOpening = null;     // the grand-opening send-off overlay, if showing
 
     // Onboarding phases (store starts CLOSED — no customers until you open it):
     //  setup       build a table + 🥟 stall + hire a helper
@@ -144,6 +149,7 @@ class Cafe extends Phaser.Scene {
     this.buildQuestTracker();
     this.buildOpenButton();
     this.buildTipBubble();
+    this.buildQueue();
     this.refreshQuests();
     this.updateTutorialTip();   // show the first step's anchored bubble
 
@@ -499,6 +505,32 @@ class Cafe extends Phaser.Scene {
     }
   }
 
+  // The big tutorial → real-game send-off. Freezes play and stays until tapped.
+  showGrandOpening() {
+    this.updateTutorialTip();   // clears the hire bubble/pulse (we're 'done' now)
+    const cx = W/2, cy = 420, pw = 322, ph = 300;
+    const cont = this.add.container(0, 0).setDepth(98);
+    cont.add(this.add.rectangle(W/2, H/2, W, H, 0x2A211B, 0.62));
+    const g = this.add.graphics();
+    g.fillStyle(COL.card, 1).fillRoundedRect(cx-pw/2, cy-ph/2, pw, ph, 20);
+    g.lineStyle(4, COL.amber, 1).strokeRoundedRect(cx-pw/2, cy-ph/2, pw, ph, 20);
+    cont.add(g);
+    cont.add(this.add.text(cx, cy-92, '🎉', { fontSize:'58px' }).setOrigin(0.5));
+    cont.add(this.add.text(cx, cy-32, 'GRAND OPENING!', { fontFamily:'system-ui,sans-serif', fontSize:'25px', color:hex(COL.red), fontStyle:'800' }).setOrigin(0.5));
+    cont.add(this.add.text(cx, cy+6, 'Your café is open for business!', { fontFamily:'system-ui,sans-serif', fontSize:'14px', color:hex(COL.brown), fontStyle:'700' }).setOrigin(0.5));
+    cont.add(this.add.text(cx, cy+40, '+' + GRAND_OPENING_BONUS + ' 💰 bonus  ·  new tables unlocked\nyour staff now earn a wage', { fontFamily:'system-ui,sans-serif', fontSize:'12px', color:hex(COL.dim), fontStyle:'700', align:'center' }).setOrigin(0.5));
+    const tap = this.add.text(cx, cy+98, 'Tap to start serving →', { fontFamily:'system-ui,sans-serif', fontSize:'16px', color:hex(COL.btn), fontStyle:'800' }).setOrigin(0.5);
+    cont.add(tap);
+    this.tweens.add({ targets: tap, alpha: 0.35, duration: 650, yoyo:true, repeat:-1, ease:'Sine.InOut' });
+    this.grandOpening = cont;
+  }
+
+  closeGrandOpening() {
+    if (!this.grandOpening) return;
+    this.grandOpening.destroy();
+    this.grandOpening = null;
+  }
+
   // ---------------- Room ----------------
   drawRoom() {
     const g = this.add.graphics().setDepth(0);
@@ -753,6 +785,8 @@ class Cafe extends Phaser.Scene {
   }
 
   handleTap(px, py) {
+    // grand-opening send-off: any tap dismisses it and starts real play
+    if (this.grandOpening) { this.closeGrandOpening(); return; }
     // an open overlay (confirm dialog, worker picker, or station menu) swallows all taps
     if (this.confirm) { this.confirmTap(px, py); return; }
     if (this.picker)  { this.pickerTap(px, py); return; }
@@ -936,12 +970,12 @@ class Cafe extends Phaser.Scene {
       this.refreshHud(); this.refreshToolbar();
       return;
     }
-    if (this.tutPhase === 'h-hire') {                  // tutorial complete — cushion before wages start
+    if (this.tutPhase === 'h-hire') {                  // tutorial complete — the big send-off
       this.setPhase('done'); this.setStepHint('');
       this.coins += GRAND_OPENING_BONUS;
       this.unlockTables([1, 3]);                       // tables 2 & 4 (the middle is table 3) open for purchase
       this.refreshHud(); this.refreshToolbar();
-      this.flashHint('Hired ' + w.emoji + '!  +' + GRAND_OPENING_BONUS + ' 💰 grand-opening bonus.\nMore tables unlocked — tap a 🪑 to add seating. Staff now draw a wage.', 4200);
+      this.showGrandOpening();                         // stays until the player taps to begin
       return;
     }
     this.refreshHud(); this.refreshToolbar();
@@ -1093,21 +1127,59 @@ class Cafe extends Phaser.Scene {
     this.menu = null;
   }
 
-  // ---------------- Customers (automatic) ----------------
+  // ---------------- Customers: a visible queue feeds the tables ----------------
+  buildQueue() {
+    this.queue = [];     // upcoming customers waiting in line (each {type, cont})
+    this.genCount = 0;   // how many customers have been generated into the queue
+    this.queueLabel = this.add.text(W/2, 736, 'next in line ↑', { fontFamily:'system-ui,sans-serif', fontSize:'11px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5).setDepth(18).setVisible(false);
+  }
+
+  // Generate one upcoming customer (with its order) at the back of the line.
+  queueCustomer() {
+    this.genCount += 1;
+    const type = this.scriptedType(this.genCount) || Phaser.Utils.Array.GetRandom(ORDERABLE_TYPES);
+    const cont = this.add.container(QUEUE_X0 + QUEUE_LEN*QUEUE_DX, QUEUE_Y).setDepth(18).setAlpha(0);
+    cont.add(this.add.circle(0, 0, 16, COL.card).setStrokeStyle(2, COL.dim));
+    cont.add(this.add.text(0, 0, '🙂', { fontSize:'17px' }).setOrigin(0.5));
+    cont.add(this.add.text(0, -23, ORDERS[type].emoji, { fontSize:'15px' }).setOrigin(0.5));
+    this.tweens.add({ targets: cont, alpha: 1, duration: 250 });
+    this.queue.push({ type, cont });
+  }
+
+  ensureQueue() {
+    if (!this.storeOpen) return;
+    while (this.queue.length < QUEUE_LEN) this.queueCustomer();
+    this.layoutQueue();
+  }
+
+  layoutQueue() {
+    this.queueLabel.setVisible(this.queue.length > 0);
+    this.queue.forEach((q, i) => this.tweens.add({ targets: q.cont, x: QUEUE_X0 + i*QUEUE_DX, duration: 250, ease:'Sine.Out' }));
+  }
+
   trySpawn() {
-    if (!this.storeOpen) return;   // closed café — no customers
-    // Hold extra arrivals while the player is mid supply/build/move step.
+    if (!this.storeOpen || this.grandOpening) return;
+    this.ensureQueue();   // keep the preview line full
+    // hold seating during gated tutorial steps (after the first customer is in)
     if ((this.tutPhase === 'd-supply' || this.tutPhase === 'b-build' || this.tutPhase === 'b-move') && this.spawnCount > 0) return;
     const spot = this.waitSpots.find(s => s.state === 'built' && !s.taken);
-    if (!spot) return; // every built table is taken — they don't come in
+    if (!spot || this.queue.length === 0) return;
+    this.seatNext(spot);
+    this.ensureQueue();
+  }
 
+  // The front of the line walks in and takes the free table.
+  seatNext(spot) {
+    const q = this.queue.shift();
+    const fromX = q.cont.x, fromY = q.cont.y;
+    q.cont.destroy();
     this.spawnCount += 1;
-    const type = this.scriptedType(this.spawnCount) || Phaser.Utils.Array.GetRandom(ORDERABLE_TYPES);
-    // The 4th customer (first boba) kicks off the boba tutorial step.
-    const triggerBoba = (this.tutPhase === 'd-run' && this.spawnCount === 4);
-    if (triggerBoba) this.setPhase('b-build');   // pause further arrivals immediately
+    if (this.tutPhase === 'd-run' && this.spawnCount === 4) this.setPhase('b-build');   // first boba → build step
+    this.seatCustomer(q.type, spot, fromX, fromY);
+  }
 
-    const cont = this.add.container(DOOR.x, DOOR.y).setDepth(20);
+  seatCustomer(type, spot, fromX, fromY) {
+    const cont = this.add.container(fromX, fromY).setDepth(20);
     cont.add(this.add.circle(0, 0, 27, COL.card).setStrokeStyle(3, COL.dim));
     cont.add(this.add.text(0, 0, '🙂', { fontSize:'27px' }).setOrigin(0.5));
     cont.add(this.add.circle(0, -46, 20, COL.cream).setStrokeStyle(2, COL.dim));
@@ -1153,6 +1225,7 @@ class Cafe extends Phaser.Scene {
       targets: cu.cont, x: DOOR.x, y: DOOR.y + 40, alpha: 0, duration: 900, ease:'Sine.In',
       onComplete: () => cu.cont.destroy()
     });
+    this.trySpawn();   // a seat just opened — bring the next in line
   }
 
   // ---------------- Automatic order filling (per worker slot) ----------------
@@ -1228,7 +1301,7 @@ class Cafe extends Phaser.Scene {
   // Continuous wage drain (only once the tutorial is fully done). Coins never go
   // negative; if payroll can't be met you go "broke" and staff idle (see runStations).
   payWages(delta) {
-    if (this.tutPhase !== 'done' || this.workers.length === 0) return;
+    if (this.grandOpening || this.tutPhase !== 'done' || this.workers.length === 0) return;
     const before = this.coins;
     this.wageBucket += this.workers.length * WAGE_PER_SEC * (delta / 1000);
     while (this.wageBucket >= 1) {
@@ -1273,8 +1346,8 @@ class Cafe extends Phaser.Scene {
   }
 
   tickPatience(delta) {
-    // Freeze patience during gated steps, when a customer is stuck waiting on you to supply/build/move.
-    if (this.tutPhase === 'd-supply' || this.tutPhase === 'b-build' || this.tutPhase === 'b-move') return;
+    // Freeze patience during gated steps and during the grand-opening send-off.
+    if (this.grandOpening || this.tutPhase === 'd-supply' || this.tutPhase === 'b-build' || this.tutPhase === 'b-move') return;
     // copy guards against splice-during-iteration in leaveCustomer
     for (const cu of [...this.customers]) {
       if (cu.state !== 'waiting' || cu.claimed) continue;
