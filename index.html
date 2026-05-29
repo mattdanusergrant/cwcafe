@@ -48,6 +48,21 @@ const ACCENT = { dumpling: COL.red, boba: COL.pink, noodle: COL.amber };
 
 const COST = { dumpling:20, boba:30, noodle:50, pet:50 };
 const LOCKED_TYPES = ['noodle'];   // visible but not buildable yet — reserved for a future update
+
+// Shared pantry: ingredient types that recipes draw from. One stall per type today,
+// but the pantry is global so future same-type stalls would share stock.
+const INGREDIENTS = {
+  dough: { emoji:'🌾', label:'Dough' },   // 🥟 dumplings
+  tea:   { emoji:'🍵', label:'Tea'   },   // 🧋 boba
+  broth: { emoji:'🍲', label:'Broth' },   // 🍜 noodles (future)
+};
+const RECIPE_ING     = { dumpling:'dough', boba:'tea', noodle:'broth' };
+const START_STOCK    = 10;    // each ingredient's starting count (covers the tutorial)
+const GRAND_OPENING_BONUS = 40;  // cushion granted when the tutorial completes, before wages begin
+const RESTOCK_AMOUNT = 8;     // units added per restock purchase
+const RESTOCK_COST   = 10;    // coins per restock (≈1.25 / unit, below dish value)
+const WAGE_PER_SEC   = 0.5;   // coins each employee costs per second (only once tutorial is done)
+const BROKE_RECOVER  = 5;     // balance needed to clear the unpaid/"broke" state
 const WORKER_EMOJIS = ['🐱', '🐶', '🐰', '🐻', '🦊', '🐼', '🐯', '🐸'];
 const START_COINS = 50;   // enough to build 🥟, then 🧋 + hire across the tutorial
 const PATIENCE_MS  = 12000;
@@ -74,6 +89,12 @@ class Cafe extends Phaser.Scene {
     this.served = 0;
     this.lost = 0;
     this.stepHint = '';           // the standing instruction shown in the hint pill
+
+    // Economy: a shared ingredient pantry, and a continuous wage drain.
+    this.pantry = { dough: START_STOCK, tea: START_STOCK, broth: START_STOCK };
+    this.wageBucket = 0;          // fractional wages owed, paid out in whole coins
+    this.broke = false;           // true while you can't make payroll → staff idle
+    this.lowSeen = {};            // first-time "out of X" hints, shown once each
 
     // Workers are distinct helpers you move between stalls. One to start, idle.
     this.workers = [];
@@ -104,6 +125,7 @@ class Cafe extends Phaser.Scene {
     this.drawRoom();
     this.buildHud();
     this.buildToolbar();
+    this.buildPantry();
 
     // Onboarding: one employee, no stations. Tap the greeting to begin; the first
     // customer arrives and the employee asks you to build their stall.
@@ -290,6 +312,63 @@ class Cafe extends Phaser.Scene {
     });
   }
 
+  // ---------------- Pantry (shared ingredients) ----------------
+  buildPantry() {
+    this.pantryCard  = this.add.graphics().setDepth(50);
+    this.pantryTitle = this.add.text(W/2, 338, '', { fontFamily:'system-ui,sans-serif', fontSize:'11px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5).setDepth(51);
+    this.pantryChips = {};
+    ['dough','tea','broth'].forEach(ing => {
+      const cont = this.add.container(0, 362).setDepth(51).setVisible(false);
+      const box  = this.add.rectangle(0, 0, 92, 32, COL.cream).setStrokeStyle(2, COL.dim);
+      const txt  = this.add.text(0, 0, '', { fontFamily:'system-ui,sans-serif', fontSize:'16px', color:hex(COL.brown), fontStyle:'700' }).setOrigin(0.5);
+      cont.add([box, txt]);
+      this.pantryChips[ing] = { ing, cont, box, txt, x:0, y:362, halfW:46, halfH:16 };
+    });
+    this.pantryActive = [];
+    this.refreshPantry();
+  }
+
+  // Ingredients worth showing: those a built stall actually uses.
+  activePantry() {
+    const set = new Set(this.stations.map(st => RECIPE_ING[st.type]));
+    return ['dough','tea','broth'].filter(k => set.has(k));
+  }
+
+  refreshPantry() {
+    if (!this.pantryChips) return;
+    const ings = this.activePantry();
+    Object.values(this.pantryChips).forEach(ch => ch.cont.setVisible(false));
+    this.pantryCard.clear();
+    this.pantryActive = [];
+    if (ings.length === 0) { this.pantryTitle.setVisible(false); return; }
+
+    const cardW = 300, cardH = 56, cx = W/2, cy = 354;
+    this.pantryCard.fillStyle(COL.card, 0.92).fillRoundedRect(cx-cardW/2, cy-cardH/2, cardW, cardH, 14);
+    this.pantryCard.lineStyle(2, COL.dim, 1).strokeRoundedRect(cx-cardW/2, cy-cardH/2, cardW, cardH, 14);
+    this.pantryTitle.setVisible(true).setText('Pantry — tap to restock  (+' + RESTOCK_AMOUNT + '  ' + RESTOCK_COST + '💰)').setPosition(cx, cy-15);
+
+    const gap = cardW / ings.length;
+    ings.forEach((ing, i) => {
+      const ch = this.pantryChips[ing];
+      const x = cx - cardW/2 + gap*(i + 0.5);
+      ch.cont.setVisible(true).setPosition(x, cy+9);
+      ch.x = x; ch.y = cy+9;
+      const stock = this.pantry[ing];
+      let col = COL.brown; if (stock === 0) col = COL.red; else if (stock <= 2) col = COL.amber;
+      ch.txt.setText(INGREDIENTS[ing].emoji + ' ' + stock).setColor(hex(col));
+      ch.box.setStrokeStyle(2, stock === 0 ? COL.red : COL.dim);
+      this.pantryActive.push(ch);
+    });
+  }
+
+  tryRestock(ing) {
+    if (this.coins < RESTOCK_COST) { this.flashHint('Need ' + RESTOCK_COST + ' 💰 to restock'); return; }
+    this.coins -= RESTOCK_COST;
+    this.pantry[ing] += RESTOCK_AMOUNT;
+    this.refreshHud(); this.refreshPantry();
+    this.flashHint('Restocked ' + INGREDIENTS[ing].emoji + ' +' + RESTOCK_AMOUNT);
+  }
+
   // ---------------- Build pads (per-slot) ----------------
   makeBuildPad(slot) {
     const type = slot.type, accent = ACCENT[type];
@@ -330,7 +409,7 @@ class Cafe extends Phaser.Scene {
   buildHud() {
     this.add.rectangle(W/2, 24, W, 48, COL.brown).setDepth(50);
     this.coinLabel = this.add.text(12, 24, '', { fontFamily:'system-ui,sans-serif', fontSize:'21px', color:'#FAF4EA', fontStyle:'700' }).setOrigin(0,0.5).setDepth(51);
-    this.statLabel = this.add.text(W-12, 24, '', { fontFamily:'system-ui,sans-serif', fontSize:'14px', color:'#FAF4EA' }).setOrigin(1,0.5).setDepth(51);
+    this.statLabel = this.add.text(W-12, 24, '', { fontFamily:'system-ui,sans-serif', fontSize:'13px', color:'#FAF4EA' }).setOrigin(1,0.5).setDepth(51);
 
     // Hint shown as a floating pill in the open floor, where it's easy to read on mobile.
     this.hintBg = this.add.graphics().setDepth(59);
@@ -356,9 +435,12 @@ class Cafe extends Phaser.Scene {
   }
 
   refreshHud() {
-    this.coinLabel.setText('💰 ' + this.coins);
+    this.coinLabel.setText('💰 ' + this.coins + (this.broke ? '  ⚠️' : ''));
+    const wage = this.workers.length * WAGE_PER_SEC;
+    const wageStr = (this.tutPhase === 'done' && this.workers.length > 0)
+      ? '  💸-' + (Number.isInteger(wage) ? wage : wage.toFixed(1)) + '/s' : '';
     this.statLabel.setText('Served ' + this.served + '  Lost ' + this.lost +
-      '  🐾' + this.workers.length + '  🪑' + this.tableCount + '/' + MAX_TABLES);
+      '  🐾' + this.workers.length + ' 🪑' + this.tableCount + '/' + MAX_TABLES + wageStr);
     this.refreshBuildPads();
   }
 
@@ -404,6 +486,10 @@ class Cafe extends Phaser.Scene {
     // toolbar (hire) button
     for (const b of this.buttons) {
       if (this.inBox(px, py, b, b.w/2, b.h/2)) { this.onButton(b); return; }
+    }
+    // pantry chips: tap to restock that ingredient
+    for (const ch of this.pantryActive) {
+      if (this.inBox(px, py, ch, ch.halfW, ch.halfH)) { this.tryRestock(ch.ing); return; }
     }
     // tap a slot: empty -> build its locked-in stall; built -> manage its worker
     for (const s of this.slots) {
@@ -479,6 +565,7 @@ class Cafe extends Phaser.Scene {
     if (slot.pad) slot.pad.cont.setVisible(false);
     this.drawStationBar(st, 0);
     this.refreshStation(st);
+    this.refreshPantry();    // this stall's ingredient now matters
     return st;
   }
 
@@ -499,9 +586,14 @@ class Cafe extends Phaser.Scene {
     if (this.coins < COST.pet) { this.flashHint('Need ' + COST.pet + ' 💰'); return; }
     this.coins -= COST.pet;
     const w = this.addWorker();                        // joins the idle pool
-    if (this.tutPhase === 'h-hire') { this.setPhase('done'); this.setStepHint(''); }  // tutorial complete
+    let msg = 'Hired ' + w.emoji + '! Tap a stall to place them';
+    if (this.tutPhase === 'h-hire') {                  // tutorial complete — cushion before wages start
+      this.setPhase('done'); this.setStepHint('');
+      this.coins += GRAND_OPENING_BONUS;
+      msg = 'Hired ' + w.emoji + '!  +' + GRAND_OPENING_BONUS + ' 💰 grand-opening bonus.\nPlace them on a stall — note: staff now draw a wage.';
+    }
     this.refreshHud(); this.refreshToolbar();
-    this.flashHint('Hired ' + w.emoji + '! Tap a stall to place them');
+    this.flashHint(msg, this.tutPhase === 'done' ? 4200 : 1300);
   }
 
   // ---------------- Worker picker ----------------
@@ -519,6 +611,8 @@ class Cafe extends Phaser.Scene {
       this.flashHint('No other helpers — hire one (🐾 ' + COST.pet + ' 💰)');
       return;
     }
+    // cut payroll: send an idle helper home (only when one is free and play has begun)
+    if (idle.length > 0 && this.tutPhase === 'done') opts.push({ dismiss: true, label: '👋 Send an idle helper home' });
     const rowH = 46, headH = 44, padB = 14, panelW = 300, halfW = (panelW - 24) / 2;
     const panelH = headH + opts.length * rowH + padB;
     const cx = W / 2, top = Phaser.Math.Clamp(430 - panelH / 2, 110, H - panelH - 20);
@@ -535,10 +629,10 @@ class Cafe extends Phaser.Scene {
     const rows = [];
     opts.forEach((o, i) => {
       const ry = top + headH + rowH*i + rowH/2;
-      cont.add(this.add.rectangle(cx, ry, panelW - 24, rowH - 8, COL.cream).setStrokeStyle(2, COL.dim));
-      cont.add(this.add.text(cx - halfW + 12, ry, o.w.emoji + '   ' + o.label,
+      cont.add(this.add.rectangle(cx, ry, panelW - 24, rowH - 8, o.dismiss ? COL.tan : COL.cream).setStrokeStyle(2, COL.dim));
+      cont.add(this.add.text(cx - halfW + 12, ry, o.dismiss ? o.label : (o.w.emoji + '   ' + o.label),
         { fontFamily:'system-ui,sans-serif', fontSize:'15px', color:hex(COL.brown), fontStyle:'700' }).setOrigin(0, 0.5));
-      rows.push({ w: o.w, ry, halfH: (rowH - 8) / 2 });
+      rows.push({ opt: o, ry, halfH: (rowH - 8) / 2 });
     });
     this.picker = { cont, station, rows, cx, halfW };
   }
@@ -547,7 +641,8 @@ class Cafe extends Phaser.Scene {
     const pk = this.picker;
     for (const r of pk.rows) {
       if (Math.abs(px - pk.cx) <= pk.halfW && Math.abs(py - r.ry) <= r.halfH) {
-        this.chooseWorker(pk.station, r.w);
+        if (r.opt.dismiss) { this.closePicker(); this.dismissIdleWorker(); }
+        else this.chooseWorker(pk.station, r.opt.w);
         return;
       }
     }
@@ -558,6 +653,14 @@ class Cafe extends Phaser.Scene {
     this.assignWorker(w, station);
     this.closePicker();
     if (this.tutPhase === 'b-move' && this.bobaStation && this.bobaStation.pet) this.finishBobaStep();
+  }
+
+  dismissIdleWorker() {
+    const w = this.freeWorkers()[0];
+    if (!w) { this.flashHint('No idle helper to send home'); return; }
+    this.workers = this.workers.filter(x => x !== w);
+    this.refreshHud(); this.refreshToolbar();
+    this.flashHint('Sent ' + w.emoji + ' home — payroll is lighter');
   }
 
   closePicker() {
@@ -641,6 +744,15 @@ class Cafe extends Phaser.Scene {
 
   // ---------------- Automatic order filling ----------------
   claimAndCook(st, cu) {
+    const ing = RECIPE_ING[st.type];
+    if (this.pantry[ing] > 0) {        // consume a unit (the grace worker may cook the last 0 for free)
+      this.pantry[ing] -= 1;
+      this.refreshPantry();
+      if (this.pantry[ing] === 0 && !this.lowSeen[ing] && this.tutPhase === 'done') {
+        this.lowSeen[ing] = true;
+        this.flashHint('Out of ' + INGREDIENTS[ing].emoji + '! Tap the pantry to restock.');
+      }
+    }
     st.busy = true; st.customer = cu;
     cu.claimed = true; cu.bubble.setText('⏳'); cu.patBar.clear();
     st.status.setText('cooking…');
@@ -687,22 +799,61 @@ class Cafe extends Phaser.Scene {
     this.tweens.add({ targets:t, y:y-46, alpha:0, duration:800, ease:'Quad.Out', onComplete:()=>t.destroy() });
   }
 
-  flashHint(msg) {
+  flashHint(msg, ms = 1300) {
     this.setHint(msg);
-    this.time.delayedCall(1300, () => { if (this.hint.text === msg) this.setHint(this.stepHint || ''); });
+    this.time.delayedCall(ms, () => { if (this.hint.text === msg) this.setHint(this.stepHint || ''); });
   }
 
   // ---------------- main loop ----------------
   update(time, delta) {
-    // assign idle staffed stations to the longest-waiting matching order
+    this.payWages(delta);
+    this.runStations();
+    this.tickPatience(delta);
+  }
+
+  // Continuous wage drain (only once the tutorial is fully done). Coins never go
+  // negative; if payroll can't be met you go "broke" and staff idle (see runStations).
+  payWages(delta) {
+    if (this.tutPhase !== 'done' || this.workers.length === 0) return;
+    const before = this.coins;
+    this.wageBucket += this.workers.length * WAGE_PER_SEC * (delta / 1000);
+    while (this.wageBucket >= 1) {
+      if (this.coins <= 0) { this.wageBucket = 0; break; }   // can't pay — forgive the rest, go broke
+      this.coins -= 1; this.wageBucket -= 1;
+    }
+    if (this.coins <= 0) this.broke = true;
+    else if (this.coins >= BROKE_RECOVER) this.broke = false;   // hysteresis so we don't flicker
+    if (this.coins !== before) { this.refreshHud(); this.refreshToolbar(); }
+  }
+
+  // While broke, one "grace" worker keeps cooking (even with no stock) so you can recover.
+  // Prefer a staffed stall that has a customer waiting, so income can always restart.
+  graceStation() {
+    const busyDemand = this.stations.find(s => s.pet &&
+      this.customers.some(c => c.state === 'waiting' && !c.claimed && c.type === s.type));
+    return busyDemand || this.stations.find(s => s.pet) || null;
+  }
+
+  // Assign idle staffed stations to the longest-waiting matching order, respecting
+  // ingredient stock and the broke/unpaid state.
+  runStations() {
+    const grace = this.broke ? this.graceStation() : null;
     for (const st of this.stations) {
       if (!st.pet || st.busy) continue;
+      const isGrace = (st === grace);
+      if (this.broke && !isGrace) { st.status.setText('unpaid 💢').setColor(hex(COL.red)); continue; }
+      const ing = RECIPE_ING[st.type];
+      if ((this.pantry[ing] || 0) <= 0 && !isGrace) { st.status.setText('out ' + INGREDIENTS[ing].emoji).setColor(hex(COL.red)); continue; }
       const cu = this.customers.find(c => c.state === 'waiting' && !c.claimed && c.type === st.type);
       if (cu) this.claimAndCook(st, cu);
+      else st.status.setText('Ready').setColor(hex(st.accent));
     }
-    // patience (copy guards against splice-during-iteration in leaveCustomer)
+  }
+
+  tickPatience(delta) {
     // Freeze patience during gated steps, when a customer is stuck waiting on you to build/hire.
     if (this.tutPhase === 'd-build' || this.tutPhase === 'b-build' || this.tutPhase === 'b-move') return;
+    // copy guards against splice-during-iteration in leaveCustomer
     for (const cu of [...this.customers]) {
       if (cu.state !== 'waiting' || cu.claimed) continue;
       cu.patience -= delta;
