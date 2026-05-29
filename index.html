@@ -145,6 +145,7 @@ class Cafe extends Phaser.Scene {
     this.buildOpenButton();
     this.buildTipBubble();
     this.refreshQuests();
+    this.updateTutorialTip();   // show the first step's anchored bubble
 
     this.input.on('pointerdown', (p) => this.handleTap(p.x, p.y));
   }
@@ -424,25 +425,57 @@ class Cafe extends Phaser.Scene {
     bg.clear();
     bg.fillStyle(COL.card, 0.97).fillRoundedRect(-w/2, -h/2, w, h, 10);
     if (dir === 'up')   bg.fillStyle(COL.card, 0.97).fillTriangle(-8, -h/2 + 2, 8, -h/2 + 2, 0, -h/2 - 9);
+    if (dir === 'down') bg.fillStyle(COL.card, 0.97).fillTriangle(-8,  h/2 - 2, 8,  h/2 - 2, 0,  h/2 + 9);
     if (dir === 'left') bg.fillStyle(COL.card, 0.97).fillTriangle(-w/2 + 2, -7, -w/2 + 2, 7, -w/2 - 9, 0);
     bg.lineStyle(2, COL.brown, 1).strokeRoundedRect(-w/2, -h/2, w, h, 10);
     if (dir === 'up')   { bg.lineBetween(-8, -h/2, 0, -h/2 - 9); bg.lineBetween(8, -h/2, 0, -h/2 - 9); }
+    if (dir === 'down') { bg.lineBetween(-8,  h/2, 0,  h/2 + 9); bg.lineBetween(8,  h/2, 0,  h/2 + 9); }
     if (dir === 'left') { bg.lineBetween(-w/2, -7, -w/2 - 9, 0); bg.lineBetween(-w/2, 7, -w/2 - 9, 0); }
     this.tip.setPosition(x, y).setVisible(true);
   }
   hideTip() { if (this.tip) this.tip.setVisible(false); }
 
-  // Anchor the tip to whatever action the current tutorial step needs.
+  // Anchor a persistent bubble to whatever control the current tutorial step needs.
   updateTutorialTip() {
     if (!this.tip) return;
-    const dump = this.getStation('dumpling');
-    if (this.tutPhase === 'setup' && this.currentSetupStep() === 2 && dump) {
+    const ph = this.tutPhase;
+    const step = ph === 'setup' ? this.currentSetupStep() : -1;
+    const dump = this.getStation('dumpling'), boba = this.getStation('boba');
+    const hiring = (ph === 'setup' && step === 1) || ph === 'h-hire';
+    this.pulseHire(hiring);   // draw the eye to the Hire button on both hire steps
+
+    if (ph === 'setup' && step === 0) {                       // build the 🥟 stall
+      const pad = this.slots[0];
+      this.showTip('👆 Tap to build 🥟', pad.x, pad.y + 62, 'up');
+    } else if (hiring) {                                      // hire a helper (toolbar button)
+      this.showTip('Tap Hire 🐾', 286, 110, 'up');
+    } else if (ph === 'setup' && step === 2 && dump) {        // assign the helper
       const slot = this.activeSlots(dump)[0];
-      this.showTip('Tap to assign 👆', slot.sx, slot.sy + 36, 'up');     // points up to the worker slot
-    } else if (this.tutPhase === 'd-supply' && dump) {
-      this.showTip('👈 Tap 🌾 to supply', dump.x + 100, PANTRY_Y, 'left'); // points left to the dough chip
+      this.showTip('Tap to assign 👆', slot.sx, slot.sy + 36, 'up');
+    } else if (ph === 'setup' && step === 3) {                // buy the (middle) table
+      const t = this.waitSpots[2];
+      this.showTip('👇 Buy this table', t.x, t.y + 6, 'down');
+    } else if (ph === 'd-supply' && dump) {                   // supply the 🥟 stall (dough chip)
+      this.showTip('👈 Tap 🌾 to supply', dump.x + 100, PANTRY_Y, 'left');
+    } else if (ph === 'b-build') {                            // build the 🧋 stall
+      const pad = this.slots[1];
+      this.showTip('👆 Tap to build 🧋', pad.x, pad.y + 62, 'up');
+    } else if (ph === 'b-move' && boba) {                     // staff the 🧋 stall
+      const slot = this.activeSlots(boba)[0];
+      this.showTip('Tap to assign 👆', slot.sx, slot.sy + 36, 'up');
     } else {
       this.hideTip();
+    }
+  }
+
+  // Pulse the Hire toolbar button (used to highlight the hire steps).
+  pulseHire(on) {
+    const b = this.buttons && this.buttons[0];
+    if (!b) return;
+    if (on && !b.tween) {
+      b.tween = this.tweens.add({ targets:[b.rect, b.txt], scaleX:1.06, scaleY:1.06, duration:550, yoyo:true, repeat:-1, ease:'Sine.InOut' });
+    } else if (!on && b.tween) {
+      b.tween.stop(); b.tween = null; b.rect.setScale(1); b.txt.setScale(1);
     }
   }
 
