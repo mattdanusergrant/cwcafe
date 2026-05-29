@@ -279,8 +279,7 @@ class Cafe extends Phaser.Scene {
     if (this.storeOpen) return;
     this.storeOpen = true;
     this.showOpenButton(false);
-    this.setPhase('d-supply');
-    this.flashHint('🎉 Now open! Here comes your first customer…', 2600);
+    this.setPhase('d-supply');   // the anchored story bubble takes over from here
     this.trySpawn();   // customer #1
   }
 
@@ -291,22 +290,10 @@ class Cafe extends Phaser.Scene {
     this.time.delayedCall(SPAWN_MS, this.trySpawn, [], this);
   }
 
-  // Phase: first customer is in but the 🥟 stall has no dough — prompt to supply it.
-  startSupplyStep() {
-    const w = this.getStation('dumpling')?.slots.find(s => s.pet)?.pet;
-    this.flashHint((w ? w.emoji + ': ' : '') + 'We’re out of dough! Tap the 🌾 above the stall to supply it.', 4200);
-  }
-
-  // Phase C: the 4th customer (boba) has arrived; ask the player to build the boba stall.
-  startBobaBuildStep() {
-    this.flashHint('A 🧋 order — your 🥟 helper can’t make that.\nTap the 🧋 slot to build it.', 3500);
-  }
-
   // Phase D: boba stall built but empty; you only have one helper — move them over.
   startBobaMoveStep(st) {
     this.bobaStation = st;
-    this.setPhase('b-move');
-    this.flashHint('You only have one helper!\nTap the 🧋 stall and move them over.', 3500);
+    this.setPhase('b-move');   // the anchored bubble prompts moving the helper
   }
 
   // Phase E: boba helper assigned — free play; now save toward hiring a 2nd helper.
@@ -317,8 +304,7 @@ class Cafe extends Phaser.Scene {
   // Triggered when the player first saves up enough to hire: nudge them to do it.
   maybeAdviseHire() {
     if (this.tutPhase !== 'h-earn' || this.coins < COST.pet) return;
-    this.setPhase('h-hire');
-    this.flashHint('You’ve saved ' + COST.pet + ' 💰! One helper can’t run both stalls —\ntap Hire 🐾 to bring on a second.', 4200);
+    this.setPhase('h-hire');   // the anchored bubble + button pulse prompt the 2nd hire
   }
 
   // ---------------- Quest tracker ----------------
@@ -415,7 +401,7 @@ class Cafe extends Phaser.Scene {
   buildTipBubble() {
     this.tip = this.add.container(0, 0).setDepth(57).setVisible(false);
     this.tipBg = this.add.graphics();
-    this.tipTxt = this.add.text(0, 0, '', { fontFamily:'system-ui,sans-serif', fontSize:'12px', color:hex(COL.brown), fontStyle:'700' }).setOrigin(0.5);
+    this.tipTxt = this.add.text(0, 0, '', { fontFamily:'system-ui,sans-serif', fontSize:'12px', color:hex(COL.brown), fontStyle:'700', align:'center', wordWrap:{ width: 188 } }).setOrigin(0.5);
     this.tip.add([this.tipBg, this.tipTxt]);
   }
 
@@ -435,7 +421,8 @@ class Cafe extends Phaser.Scene {
   }
   hideTip() { if (this.tip) this.tip.setVisible(false); }
 
-  // Anchor a persistent bubble to whatever control the current tutorial step needs.
+  // Anchor a persistent story bubble to whatever control the current step needs.
+  // The bubble carries the story beat AND the action, and stays until you act.
   updateTutorialTip() {
     if (!this.tip) return;
     const ph = this.tutPhase;
@@ -446,23 +433,25 @@ class Cafe extends Phaser.Scene {
 
     if (ph === 'setup' && step === 0) {                       // build the 🥟 stall
       const pad = this.slots[0];
-      this.showTip('👆 Tap to build 🥟', pad.x, pad.y + 62, 'up');
-    } else if (hiring) {                                      // hire a helper (toolbar button)
-      this.showTip('Tap Hire 🐾', 286, 110, 'up');
+      this.showTip('Let’s open! Build a 🥟 stall 👆', pad.x, pad.y + 62, 'up');
+    } else if (ph === 'setup' && step === 1) {                // hire the first helper
+      this.showTip('Hire a helper! 🐾', 288, 116, 'up');
+    } else if (ph === 'h-hire') {                             // hire the second helper
+      this.showTip('Hire a 2nd helper! 🐾', 288, 116, 'up');
     } else if (ph === 'setup' && step === 2 && dump) {        // assign the helper
       const slot = this.activeSlots(dump)[0];
-      this.showTip('Tap to assign 👆', slot.sx, slot.sy + 36, 'up');
+      this.showTip('Put them to work 👆', slot.sx, slot.sy + 40, 'up');
     } else if (ph === 'setup' && step === 3) {                // buy the (middle) table
       const t = this.waitSpots[2];
-      this.showTip('👇 Buy this table', t.x, t.y + 6, 'down');
+      this.showTip('Guests need a seat! 👇', t.x, t.y + 6, 'down');
     } else if (ph === 'd-supply' && dump) {                   // supply the 🥟 stall (dough chip)
-      this.showTip('👈 Tap 🌾 to supply', dump.x + 100, PANTRY_Y, 'left');
+      this.showTip('Out of dough! Tap 🌾 👈', dump.x + 108, PANTRY_Y, 'left');
     } else if (ph === 'b-build') {                            // build the 🧋 stall
       const pad = this.slots[1];
-      this.showTip('👆 Tap to build 🧋', pad.x, pad.y + 62, 'up');
+      this.showTip('A 🧋 order! Build it 👆', pad.x, pad.y + 62, 'up');
     } else if (ph === 'b-move' && boba) {                     // staff the 🧋 stall
       const slot = this.activeSlots(boba)[0];
-      this.showTip('Tap to assign 👆', slot.sx, slot.sy + 36, 'up');
+      this.showTip('Move a helper to 🧋 👆', slot.sx, slot.sy + 40, 'up');
     } else {
       this.hideTip();
     }
@@ -791,7 +780,7 @@ class Cafe extends Phaser.Scene {
     s.state = 'built';
     this.refreshTables();
     this.refreshHud(); this.refreshToolbar();
-    this.flashHint('Table built! 🪑');
+    if (this.tutPhase !== 'setup') this.flashHint('Table built! 🪑');   // in setup the bubble advances instead
     this.checkSetup();
   }
 
@@ -911,18 +900,21 @@ class Cafe extends Phaser.Scene {
     if (this.coins < COST.pet) { this.flashHint('Need ' + COST.pet + ' 💰'); return; }
     this.coins -= COST.pet;
     const w = this.addWorker();                        // joins the idle pool
-    let msg = 'Hired ' + w.emoji + '! Tap a stall to place them';
-    if (this.tutPhase === 'setup') {                   // next step: assign them to the 🥟 stall
-      this.checkSetup();                               // shows the persistent "Tap to assign" bubble at the slot
-      msg = 'Hired ' + w.emoji + '!';
-    } else if (this.tutPhase === 'h-hire') {           // tutorial complete — cushion before wages start
+    if (this.tutPhase === 'setup') {                   // next step (assign) is guided by the anchored bubble
+      this.checkSetup();
+      this.refreshHud(); this.refreshToolbar();
+      return;
+    }
+    if (this.tutPhase === 'h-hire') {                  // tutorial complete — cushion before wages start
       this.setPhase('done'); this.setStepHint('');
       this.coins += GRAND_OPENING_BONUS;
       this.unlockTables([1, 3]);                       // tables 2 & 4 (the middle is table 3) open for purchase
-      msg = 'Hired ' + w.emoji + '!  +' + GRAND_OPENING_BONUS + ' 💰 grand-opening bonus.\nMore tables unlocked — tap a 🪑 to add seating. Staff now draw a wage.';
+      this.refreshHud(); this.refreshToolbar();
+      this.flashHint('Hired ' + w.emoji + '!  +' + GRAND_OPENING_BONUS + ' 💰 grand-opening bonus.\nMore tables unlocked — tap a 🪑 to add seating. Staff now draw a wage.', 4200);
+      return;
     }
     this.refreshHud(); this.refreshToolbar();
-    this.flashHint(msg, this.tutPhase === 'done' ? 4200 : 1300);
+    this.flashHint('Hired ' + w.emoji + '! Tap a stall to place them');
   }
 
   // ---------------- Worker picker (one station slot at a time) ----------------
@@ -1103,11 +1095,6 @@ class Cafe extends Phaser.Scene {
         cu.state = 'waiting';
         cu.bubble.setText(ORDERS[type].emoji);
         this.drawPatience(cu);
-        if (this.tutPhase === 'd-supply') {
-          this.startSupplyStep();          // helper: we have no dough!
-        } else if (triggerBoba) {
-          this.startBobaBuildStep();
-        }
       }
     });
   }
