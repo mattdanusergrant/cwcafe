@@ -210,7 +210,7 @@ class Cafe extends Phaser.Scene {
       case 'done':
       case 'h-earn':
       case 'h-hire':  return true;            // free play
-      case 'setup':   return type === 'dumpling' && !this.hasStation('dumpling');
+      case 'setup':   return type === 'dumpling' && this.currentSetupStep() === 0;
       case 'b-build': return type === 'boba';
       default:        return false;           // open-ready, d-supply, d-run, b-move
     }
@@ -221,8 +221,8 @@ class Cafe extends Phaser.Scene {
 
   // hint shown when a gated control is tapped before its phase
   tutHint() {
+    if (this.tutPhase === 'setup') return this.setupHint();
     return {
-      'setup'     :'Build a table, the 🥟 stall, then hire a helper',
       'open-ready':'Press OPEN THE STORE to start serving',
       'd-supply'  :'Supply the 🥟 stall — tap the 🌾 above it',
       'd-run'     :'Let your helper serve these first…',
@@ -233,24 +233,35 @@ class Cafe extends Phaser.Scene {
     }[this.tutPhase] || '';
   }
 
-  // ----- Setup (store closed): build a table + 🥟 stall + hire a helper -----
-  builtTables() { return this.waitSpots.filter(s => s.state === 'built').length; }
-  setupComplete() { return this.builtTables() > 0 && this.hasStation('dumpling') && this.workers.length > 0; }
+  // ----- Setup: a strict 5-step sequence, one action enabled at a time -----
+  builtTables()     { return this.waitSpots.filter(s => s.state === 'built').length; }
+  dumplingStaffed() { const st = this.getStation('dumpling'); return !!(st && this.activeSlots(st).some(sl => sl.pet)); }
 
-  // Put an idle helper onto the dumpling stall automatically while setting up.
-  autoStaffSetup() {
-    if (this.tutPhase !== 'setup') return;
-    const st = this.getStation('dumpling');
-    const idle = this.freeWorkers()[0];
-    const empty = st && this.firstEmptySlot(st);
-    if (st && idle && empty) this.assignToSlot(idle, st, empty);
+  // The current setup step (0..4); each step's action is enabled only on its turn.
+  currentSetupStep() {
+    if (!this.hasStation('dumpling')) return 0;   // build the 🥟 stall
+    if (this.workers.length === 0)    return 1;   // hire a helper
+    if (!this.dumplingStaffed())      return 2;   // assign the helper
+    if (this.builtTables() === 0)     return 3;   // buy a table
+    return 4;                                     // open the store
+  }
+  setupComplete() { return this.currentSetupStep() >= 4; }
+  tableBuyable()  { return this.tutPhase === 'setup' && this.currentSetupStep() === 3; }
+
+  setupHint() {
+    return [
+      'Step 1: build the 🥟 stall — tap its slot',
+      'Step 2: hire a helper 🐾',
+      'Step 3: assign your helper — tap the 🥟 stall’s worker slot',
+      'Step 4: buy a table — tap the green table',
+      'Step 5: press OPEN THE STORE',
+    ][this.currentSetupStep()];
   }
 
-  // Called after each setup action; flips to 'open-ready' (shows the OPEN button) when done.
+  // Called after each setup action; re-gates everything and shows OPEN when done.
   checkSetup() {
     if (this.tutPhase !== 'setup') return;
-    this.autoStaffSetup();
-    this.refreshQuests();
+    this.refreshQuests(); this.refreshToolbar(); this.refreshBuildPads(); this.refreshTables();
     if (this.setupComplete()) { this.setPhase('open-ready'); this.showOpenButton(true); }
   }
 
@@ -316,10 +327,11 @@ class Cafe extends Phaser.Scene {
       case 'setup':
       case 'open-ready':
         return { title:'📋 Open your café!', items:[
-          { t:'Build a table 🪑',         done:this.builtTables() > 0 },
           { t:'Build the dumpling stall 🥟', done:this.hasStation('dumpling') },
-          { t:'Hire a helper 🐾',         done:this.workers.length > 0 },
-          { t:'Open the store 🎉',        done:this.storeOpen },
+          { t:'Hire a helper 🐾',            done:this.workers.length > 0 },
+          { t:'Assign the helper to 🥟',     done:this.dumplingStaffed() },
+          { t:'Buy a table 🪑',              done:this.builtTables() > 0 },
+          { t:'Open the store 🎉',           done:this.storeOpen },
         ]};
       case 'd-supply':
         return { title:'📋 Stock the kitchen', items:[
@@ -359,16 +371,20 @@ class Cafe extends Phaser.Scene {
     this.questBg.fillStyle(COL.card, 0.95).fillRoundedRect(left, top, cardW, cardH, 14);
     this.questBg.lineStyle(2, COL.brown, 1).strokeRoundedRect(left, top, cardW, cardH, 14);
     this.questTitle.setVisible(true).setText(q.title).setPosition(cx, top + 15);
+    const current = q.items.findIndex(it => !it.done);   // the step you're on now
     q.items.forEach((it, i) => {
       const r = this.questRows[i];
       r.setVisible(true).setPosition(left + 18, top + headH + rowH*i + rowH/2);
-      r.setText((it.done ? '✅ ' : '⬜ ') + it.t).setColor(hex(it.done ? COL.green : COL.brown));
+      let mark = '⬜ ', col = COL.dim;
+      if (it.done)          { mark = '✅ '; col = COL.green; }
+      else if (i === current) { mark = '▶ '; col = COL.brown; }
+      r.setText(mark + it.t).setColor(hex(col));
     });
   }
 
   // ---------------- OPEN THE STORE button ----------------
   buildOpenButton() {
-    const x = W/2, y = 506, w = 260, h = 56;
+    const x = W/2, y = 650, w = 260, h = 64;
     const rect = this.add.rectangle(x, y, w, h, COL.btn).setStrokeStyle(3, COL.brown).setDepth(58).setVisible(false);
     const txt = this.add.text(x, y, 'OPEN THE STORE 🎉', { fontFamily:'system-ui,sans-serif', fontSize:'19px', color:'#FFFFFF', fontStyle:'700' }).setOrigin(0.5).setDepth(59).setVisible(false);
     this.openBtn = { x, y, w, h, rect, txt, tween:null };
@@ -423,10 +439,13 @@ class Cafe extends Phaser.Scene {
       if (s.state === 'built') {
         g.fillStyle(COL.tan, 1).fillRoundedRect(tx, ty, tw, th, 7);
         g.lineStyle(2, COL.brown, 1).strokeRoundedRect(tx, ty, tw, th, 7);
-      } else if (s.state === 'available') {
+      } else if (s.state === 'available' && this.tableBuyable()) {
         g.fillStyle(COL.btn, 0.12).fillRoundedRect(tx, ty, tw, th, 7);
         g.lineStyle(2.5, COL.btn, 1).strokeRoundedRect(tx, ty, tw, th, 7);
         lbl.setText('+' + TABLE_COST + '💰').setColor(hex(COL.brown));
+      } else if (s.state === 'available') {   // unlocked, but not its turn yet — show dim
+        g.lineStyle(2, COL.dim, 0.5).strokeRoundedRect(tx, ty, tw, th, 7);
+        lbl.setText('🪑').setColor(hex(COL.dim));
       } else { // locked
         g.lineStyle(2, COL.dim, 0.4).strokeRoundedRect(tx, ty, tw, th, 7);
         lbl.setText('🔒').setColor(hex(COL.dim));
@@ -607,8 +626,8 @@ class Cafe extends Phaser.Scene {
     this.refreshBuildPads();
   }
 
-  canHireNow()    { return this.tutPhase === 'setup' || this.tutPhase === 'h-hire' || this.tutPhase === 'done'; }
-  canManageStaff(){ return this.tutPhase === 'setup' || this.storeOpen; }
+  canHireNow()    { return (this.tutPhase === 'setup' && this.currentSetupStep() === 1) || this.tutPhase === 'h-hire' || this.tutPhase === 'done'; }
+  canManageStaff(){ return (this.tutPhase === 'setup' && this.currentSetupStep() === 2) || this.storeOpen; }
 
   refreshToolbar() {
     if (!this.buttons) return;
@@ -665,13 +684,19 @@ class Cafe extends Phaser.Scene {
       if (this.tutPhase === 'b-move') { const e = this.firstEmptySlot(st); if (e) { this.openWorkerPicker(st, e); return; } }
       // tap the stall body (upper area) -> Station Menu (upgrades + stats), in free play
       if (this.inFreePlay() && py <= st.y) { this.openStationMenu(st); return; }
+      // during setup, a station tap that isn't this step's action -> remind the player
+      if (this.tutPhase === 'setup') { this.flashHint(this.setupHint()); return; }
       return;
     }
-    // tap a table spot: available -> buy it; locked -> "coming soon"
+    // tap a table spot: available (on its turn) -> buy; otherwise explain
     for (const s of this.waitSpots) {
       if (!this.inBox(px, py, { x:s.x, y:s.y + 20 }, 30, 50)) continue;
-      if (s.state === 'available') { this.tryBuyTable(s); return; }
-      if (s.state === 'locked')    { this.flashHint('🪑 More tables coming in a future update!'); return; }
+      if (s.state === 'available') {
+        if (this.tutPhase !== 'setup' || this.tableBuyable()) this.tryBuyTable(s);
+        else this.flashHint(this.setupHint());   // not the table's turn yet
+        return;
+      }
+      if (s.state === 'locked') { this.flashHint('🪑 More tables coming in a future update!'); return; }
       return; // a built table — nothing to do for now
     }
   }
@@ -809,9 +834,9 @@ class Cafe extends Phaser.Scene {
     this.coins -= COST.pet;
     const w = this.addWorker();                        // joins the idle pool
     let msg = 'Hired ' + w.emoji + '! Tap a stall to place them';
-    if (this.tutPhase === 'setup') {                   // first helper auto-mans the 🥟 stall
+    if (this.tutPhase === 'setup') {                   // next step: assign them to the 🥟 stall
       this.checkSetup();
-      msg = 'Hired ' + w.emoji + '! They’ll staff the 🥟 stall.';
+      msg = 'Hired ' + w.emoji + '! Now tap the 🥟 stall’s worker slot to assign them.';
     } else if (this.tutPhase === 'h-hire') {           // tutorial complete — cushion before wages start
       this.setPhase('done'); this.setStepHint('');
       this.coins += GRAND_OPENING_BONUS;
@@ -879,6 +904,7 @@ class Cafe extends Phaser.Scene {
     this.assignToSlot(w, station, slot);
     this.closePicker();
     if (this.tutPhase === 'b-move' && this.bobaStation && this.activeSlots(this.bobaStation).some(s => s.pet)) this.finishBobaStep();
+    else if (this.tutPhase === 'setup') this.checkSetup();   // assigning advances the setup sequence
   }
 
   dismissIdleWorker() {
