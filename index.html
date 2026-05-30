@@ -77,7 +77,7 @@ const UPGRADES = {
   eff:   { emoji:'🌿', label:'Efficiency',  effect:'chance to use no ingredient',        base:70  },
 };
 const WORKER_EMOJIS = ['🐱', '🐶', '🐰', '🐻', '🦊', '🐼', '🐯', '🐸'];
-const START_COINS = 950;  // enough to build a table + 🥟 stall + hire + first supply before any income
+const START_COINS = 900;  // enough to build a table + 🥟 stall + hire + first supply before any income
 const PATIENCE_MS  = 12000;
 const SPAWN_MS     = 2600;
 const WALK_MS      = 1300;
@@ -91,7 +91,7 @@ const ORDERABLE_TYPES = SLOT_TYPES.filter(t => !LOCKED_TYPES.includes(t));  // w
 const WAIT_Y = 610;   // where a seated guest sits (their order bubble floats above, clear of the quest card)
 const TABLE_Y = 520;  // the table / "buy table" row sits ABOVE the guest, below even the tall setup quest card
 const WAIT_X = [65, 130, 195, 260, 325];   // up to 5 table positions
-const TABLE_COST    = 100;
+const TABLE_COST    = 50;
 const TABLE_UNLOCKED = [2];   // WAIT_X indices buyable now (the middle); the rest are locked for a future update
 const QUEUE_LEN = 3;          // how many upcoming customers wait in the visible line
 const QUEUE_X   = 195;        // the line's column
