@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-<meta name="apple-mobile-web-app-title" content="CW Cafe" />
-<title>CW Cafe — Prototype</title>
+<meta name="apple-mobile-web-app-title" content="CW Market" />
+<title>CW Market — Prototype</title>
 <style>
   html, body { margin: 0; padding: 0; background: #FAF4EA; height: 100%; overflow: hidden; }
   #game { width: 100vw; height: 100vh; }
@@ -18,6 +18,24 @@
 <div id="game"></div>
 <script>
 "use strict";
+
+/* ============================================================================
+   CW MARKET — a pop-up food market you automate stall by stall.
+
+   Core loop (the heart of the game):
+     hand-cook  →  train by repetition  →  automate, one step at a time.
+
+   Every recipe is an ordered sequence of tap-steps (wrap → fill → boil).
+   You make dishes by tapping each step. Each manual tap nudges that step's
+   training meter; once a step is learned AND a helper is on the stall, the
+   helper performs that step automatically — so you tap fewer and fewer steps
+   until the line runs itself and the stall earns passively while you walk away
+   to work another stall.
+
+   Two scenes share one module-scope game state (G):
+     • Market — a hub of stalls; tap one to step inside it.
+     • Stall  — the cooking floor for one stall (steps, counter, queue, helper).
+   ========================================================================== */
 
 const W = 390, H = 844;
 const COL = {
@@ -31,6 +49,7 @@ const COL = {
   tan:      0xE8C39E,
   pink:     0xF2A6B3,
   green:    0x8FBF6F,
+  blue:     0x6FA8C7,
   brown:    0x5A453B,
   dim:      0xB6A488,
   amber:    0xE0913B,
@@ -38,570 +57,287 @@ const COL = {
   btnOff:   0xC4BBA8,
 };
 const hex = c => '#' + c.toString(16).padStart(6, '0');
+const FONT = 'system-ui,sans-serif';
 
-const ORDERS = {
-  dumpling: { emoji:'🥟', value:5, cookMs:2500 },
-  boba:     { emoji:'🧋', value:7, cookMs:3000 },
-  noodle:   { emoji:'🍜', value:9, cookMs:3500 },
-};
-const ACCENT = { dumpling: COL.red, boba: COL.pink, noodle: COL.amber };
-
-const COST = { dumpling:100, boba:100, noodle:100, pet:300 };
-const LOCKED_TYPES = ['noodle'];   // visible but not buildable yet — reserved for a future update
-
-// Shared pantry: ingredient types that recipes draw from. One stall per type today,
-// but the pantry is global so future same-type stalls would share stock.
+// ---- Ingredients (a shared pantry; one stall draws from each today) ----
 const INGREDIENTS = {
   dough: { emoji:'🌾', label:'Dough' },   // 🥟 dumplings
   tea:   { emoji:'🍵', label:'Tea'   },   // 🧋 boba
   broth: { emoji:'🍲', label:'Broth' },   // 🍜 noodles (future)
 };
-const RECIPE_ING     = { dumpling:'dough', boba:'tea', noodle:'broth' };
-const START_STOCK    = 100;   // each ingredient's starting count (a full restock's worth in the bank)
-const GRAND_OPENING_BONUS = 250;  // cushion granted when the tutorial completes, before wages begin
-const RESTOCK_AMOUNT = 100;   // units added per restock purchase (a big, deliberate buy)
-const RESTOCK_COST   = 100;   // coins per restock (1 / unit, below dish value)
-const WAGE_PER_SEC   = 0.5;   // coins each employee costs per second (only once tutorial is done)
-const BROKE_RECOVER  = 5;     // balance needed to clear the unpaid/"broke" state
 
-// Stations hold multiple worker slots (capacity 1, upgradable) and offer upgrades.
-const MAX_SLOTS    = 3;       // worker slots a station can reach via the Capacity upgrade
-const MAX_SHELF    = 3;       // pre-made dishes a station's pickup shelf can hold
-const UPGRADE_MAX  = 3;       // max level for speed / price / efficiency
-const UPGRADE_GROW = 1.7;     // each level multiplies an upgrade's cost
-const UPGRADES = {
-  cap:   { emoji:'👥', label:'Capacity',   effect:'+1 worker slot (cook in parallel)', base:120 },
-  shelf: { emoji:'🍱', label:'Pickup Shelf',effect:'+1 pre-made dish ready to serve',   base:90  },
-  speed: { emoji:'⚡', label:'Cook Speed',  effect:'each level ~18% faster',            base:60  },
-  price: { emoji:'💲', label:'Dish Price',  effect:'+3 💰 per dish served',              base:80  },
-  eff:   { emoji:'🌿', label:'Efficiency',  effect:'chance to use no ingredient',        base:70  },
+// ---- Recipes: an ordered list of tap-steps. Each step trains independently. ----
+const RECIPES = {
+  boiled: { value:6, steps:[
+    { emoji:'🌾', label:'Wrap', ms:600 },
+    { emoji:'🥩', label:'Fill', ms:600 },
+    { emoji:'♨️', label:'Boil', ms:1000 },
+  ]},
+  // Reserved for a later phase (boba stall):
+  milktea: { value:8, steps:[
+    { emoji:'🍵', label:'Brew', ms:700 },
+    { emoji:'🥛', label:'Pour', ms:600 },
+    { emoji:'🟤', label:'Pearls', ms:700 },
+  ]},
 };
-const WORKER_EMOJIS = ['🐱', '🐶', '🐰', '🐻', '🦊', '🐼', '🐯', '🐸'];
-const START_COINS = 900;  // enough to build a table + 🥟 stall + hire + first supply before any income
-const PATIENCE_MS  = 12000;
-const SPAWN_MS     = 2600;
-const WALK_MS      = 1300;
 
-// fixed station slots along the back, and customer waiting spots
-const SLOT_Y = 210;
-const SLOT_X = [78, 195, 312];
-const PANTRY_Y = 123;   // ingredient chips sit here, directly above each station column
-const SLOT_TYPES = ['dumpling', 'boba', 'noodle'];  // each slot is locked to one recipe
-const ORDERABLE_TYPES = SLOT_TYPES.filter(t => !LOCKED_TYPES.includes(t));  // what customers may ask for
-const WAIT_Y = 610;   // where a seated guest sits (their order bubble floats above, clear of the quest card)
-const TABLE_Y = 520;  // the table / "buy table" row sits ABOVE the guest, below even the tall setup quest card
-const WAIT_X = [65, 130, 195, 260, 325];   // up to 5 table positions
-const TABLE_COST    = 50;
-const TABLE_UNLOCKED = [2];   // WAIT_X indices buyable now (the middle); the rest are locked for a future update
-const QUEUE_LEN = 3;          // how many upcoming customers wait in the visible line
-const QUEUE_X   = 195;        // the line's column
-const QUEUE_Y0  = 700;        // front of the line (nearest the café)
-const QUEUE_DY  = 46;         // vertical spacing back toward the door
-const DOOR   = { x: W/2, y: 826 };
+// ---- Stalls: the market roster. Only the dumpling stall is enterable for now. ----
+//   open   — playable
+//   locked — buyable to open in a later phase (shown with a price)
+//   soon   — reserved for a future update
+const STALLS = {
+  dumpling: { name:'Dumpling Stall', emoji:'🥟', accent:COL.red,   ingredient:'dough', recipe:'boiled',  state:'open' },
+  boba:     { name:'Boba Stall',     emoji:'🧋', accent:COL.pink,  ingredient:'tea',   recipe:'milktea', state:'locked', cost:250 },
+  noodle:   { name:'Noodle Stall',   emoji:'🍜', accent:COL.amber, ingredient:'broth', recipe:'noodlesoup', state:'soon' },
+};
+const STALL_ORDER = ['dumpling', 'boba', 'noodle'];
 
-class Cafe extends Phaser.Scene {
-  constructor() { super('cafe'); }
+// ---- Economy / tuning ----
+const START_COINS    = 120;   // enough to cook, restock a couple times, and earn toward a helper
+const START_STOCK    = 15;    // each ingredient's starting count
+const RESTOCK_AMOUNT = 15;    // units per restock
+const RESTOCK_COST   = 20;    // coins per restock (below the per-dish margin)
+const HIRE_COST      = 150;   // coins to hire + assign a helper to a stall
+const WAGE_PER_SEC   = 0.4;   // coins each helper costs per second
+const TRAIN_PER_TAP  = 0.2;   // training a step gains this per manual completion (5 reps to learn)
+const TRAY_MAX       = 4;     // finished dishes a stall's pickup tray can hold
+const QUEUE_MAX      = 4;     // customers that line up at a stall
+const PATIENCE_MS    = 14000;
+const SPAWN_MS       = 3000;
+const WORKER_EMOJIS  = ['🐱', '🐶', '🐰', '🐻', '🦊', '🐼', '🐯', '🐸'];
+
+/* ============================================================================
+   Game state (shared across scenes) + pure helpers
+   ========================================================================== */
+function makeStallState(id) {
+  const r = RECIPES[STALLS[id].recipe];
+  return {
+    id,
+    train: r ? r.steps.map(() => 0) : [],   // per-step training meter, 0..1
+    served: 0,
+    revenue: 0,
+    acc: 0,                                  // fractional cycle progress for passive income
+  };
+}
+
+const G = {
+  coins: START_COINS,
+  pantry: { dough: START_STOCK, tea: START_STOCK, broth: START_STOCK },
+  workers: [],                 // { id, emoji, stallId }
+  workerSeq: 0,
+  wageBucket: 0,               // fractional wages owed
+  stalls: Object.fromEntries(STALL_ORDER.map(id => [id, makeStallState(id)])),
+  firstCookDone: false,        // clears the opening nudge
+};
+
+const recipeOf  = id => RECIPES[STALLS[id].recipe];
+const cycleMs   = id => recipeOf(id).steps.reduce((a, s) => a + s.ms, 0);
+const workersAt = id => G.workers.filter(w => w.stallId === id);
+const isLearned = (id, k) => G.stalls[id].train[k] >= 1;
+const isAutomated = id => {
+  const r = recipeOf(id);
+  return STALLS[id].state === 'open' && workersAt(id).length > 0 && r.steps.every((_, k) => isLearned(id, k));
+};
+
+// Continuous wage drain — coins never go negative (helpers simply work for free if broke).
+function tickWages(dtMs) {
+  const n = G.workers.length;
+  if (n === 0) return;
+  G.wageBucket += n * WAGE_PER_SEC * (dtMs / 1000);
+  while (G.wageBucket >= 1 && G.coins > 0) { G.coins -= 1; G.wageBucket -= 1; }
+  if (G.coins <= 0) G.wageBucket = 0;
+}
+
+// Passive income for fully-automated stalls that aren't being hand-run right now.
+// (When you're inside a stall, that stall is driven by its scene, so we skip it here.)
+function tickPassive(dtMs, exceptId) {
+  for (const id of STALL_ORDER) {
+    if (id === exceptId || !isAutomated(id)) continue;
+    const ing = STALLS[id].ingredient;
+    if (G.pantry[ing] <= 0) continue;
+    const stall = G.stalls[id], cyc = cycleMs(id), val = recipeOf(id).value;
+    stall.acc += dtMs;
+    while (stall.acc >= cyc && G.pantry[ing] > 0) {
+      stall.acc -= cyc;
+      G.pantry[ing] -= 1;
+      G.coins += val; stall.served += 1; stall.revenue += val;
+    }
+  }
+}
+
+/* ============================================================================
+   Shared UI bits
+   ========================================================================== */
+// A rounded button drawn from a rectangle (easy hit-testing) + centered label.
+function makeButton(scene, x, y, w, h, fill, label, fontSize, depth) {
+  const rect = scene.add.rectangle(x, y, w, h, fill).setStrokeStyle(2, COL.brown).setDepth(depth || 60);
+  const txt = scene.add.text(x, y, label, { fontFamily:FONT, fontSize:(fontSize||'15px'), color:'#FFFFFF', fontStyle:'700' }).setOrigin(0.5).setDepth((depth||60)+1);
+  return { x, y, w, h, rect, txt };
+}
+const inBox = (px, py, o, hw, hh) => px >= o.x-hw && px <= o.x+hw && py >= o.y-hh && py <= o.y+hh;
+const hitBtn = (px, py, b) => inBox(px, py, b, b.w/2, b.h/2);
+
+/* ============================================================================
+   MARKET SCENE — the hub: tap a stall to step inside it
+   ========================================================================== */
+class Market extends Phaser.Scene {
+  constructor() { super('market'); }
 
   create() {
-    this.coins = START_COINS;
-    this.served = 0;
-    this.lost = 0;
-    this.stepHint = '';           // the standing instruction shown in the hint pill
-
-    // Economy: a shared ingredient pantry, and a continuous wage drain.
-    // The dumpling stall starts EMPTY so the tutorial can teach supplying; other
-    // stalls come stocked.
-    this.pantry = { dough: 0, tea: START_STOCK, broth: START_STOCK };
-    this.wageBucket = 0;          // fractional wages owed, paid out in whole coins
-    this.broke = false;           // true while you can't make payroll → staff idle
-    this.lowSeen = {};            // first-time "out of X" hints, shown once each
-
-    // Workers are distinct helpers you move between stalls. None to start — you hire one.
-    this.workers = [];
-    this.workerSeq = 0;
-    this.picker = null;           // open worker-picker overlay, if any
-    this.menu = null;             // open station-menu overlay, if any
-    this.confirm = null;          // open confirmation dialog, if any
-    this.grandOpening = null;     // the grand-opening send-off overlay, if showing
-
-    // Onboarding phases (store starts CLOSED — no customers until you open it):
-    //  setup       build a table + 🥟 stall + hire a helper
-    //  open-ready  all built — press OPEN THE STORE
-    //  d-supply    store open; first customer in; supply the 🥟 stall
-    //  d-run       customers #1-3 (dumpling) stream in and get served
-    //  b-build     customer #4 (boba) waits, build the 🧋 stall
-    //  b-move      boba stall built; move your one helper over to make boba
-    //  h-earn      "Hire a 2nd helper" quest: save toward a 2nd helper
-    //  h-hire      saved enough — advised to hire a second helper
-    //  h-assign    "Grand Opening" quest begins; tables 2 & 4 unlock; staff both stations
-    //  h-tables    both stations staffed; reach 3 tables total
-    //  grand-ready all goals met; press the big GRAND OPENING button to celebrate
-    //  done        normal play (tutorial complete)
-    this.tutPhase = 'setup';
-    this.storeOpen = false;       // becomes true once — the store never closes again
-    this.spawnCount = 0;          // how many customers have spawned
-    this.spawnStarted = false;    // is the recurring spawn loop running yet
-
-    this.customers = [];
-    this.stations = [];
-    // Each table spot is 'locked' (future update), 'available' (tap to buy), or 'built'.
-    this.waitSpots = WAIT_X.map((x, i) => ({ x, y: WAIT_Y, taken: null, state: TABLE_UNLOCKED.includes(i) ? 'available' : 'locked' }));
-    this.slots = SLOT_X.map((x, i) => ({ x, y: SLOT_Y, type: SLOT_TYPES[i], station: null, pad: null }));
-
-    this.drawRoom();
+    this.drawBackground();
     this.buildHud();
-    this.buildToolbar();
-    this.buildPantry();
-    this.buildQuestTracker();
-    this.buildOpenButton();
-    this.buildTipBubble();
-    this.buildQueue();
-    this.refreshQuests();
-    this.updateTutorialTip();   // show the first step's anchored bubble
 
-    this.input.on('pointerdown', (p) => this.handleTap(p.x, p.y));
-  }
+    this.add.text(W/2, 78, '🏮 CW Market', { fontFamily:FONT, fontSize:'26px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5).setDepth(5);
+    this.add.text(W/2, 104, 'Tap a stall to run it', { fontFamily:FONT, fontSize:'13px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5).setDepth(5);
 
-  // ---------------- Workers ----------------
-  addWorker() {
-    const emoji = WORKER_EMOJIS[this.workers.length % WORKER_EMOJIS.length];
-    const w = { id: ++this.workerSeq, emoji, speed: 1, station: null, slot: null };
-    this.workers.push(w);
-    return w;
-  }
+    // One card per stall, stacked down the screen.
+    this.cards = [];
+    const top = 150, cardH = 184, gap = 16;
+    STALL_ORDER.forEach((id, i) => this.cards.push(this.buildCard(id, top + i*(cardH+gap), cardH)));
 
-  freeWorkers() { return this.workers.filter(w => !w.station); }
-
-  // Place worker w into a specific station slot. If the slot was filled, that worker
-  // swaps into w's old slot (or goes idle if w was idle).
-  assignToSlot(w, station, slot) {
-    if (w.slot === slot) return;
-    const prevW = slot.pet;                      // who's in the target slot now
-    const fromSt = w.station, fromSlot = w.slot; // where w came from (or null = idle)
-    if (fromSlot) fromSlot.pet = null;
-    w.station = station; w.slot = slot; slot.pet = w;
-    if (prevW && prevW !== w) {                  // displaced worker swaps into w's old slot (or idle)
-      prevW.station = fromSlot ? fromSt : null;
-      prevW.slot = fromSlot || null;
-      if (fromSlot) fromSlot.pet = prevW;
-    }
-    this.refreshSlot(slot);
-    if (fromSlot && fromSlot !== slot) this.refreshSlot(fromSlot);
-    if (fromSt && fromSt !== station) this.refreshStationStatus(fromSt);
-    this.refreshStationStatus(station);
+    this.hintPill = this.makeHintPill();
+    this.input.on('pointerdown', p => this.handleTap(p.x, p.y));
     this.refreshHud();
   }
 
-  // Send the worker in this slot back to the idle pool.
-  clearSlot(slot) {
-    const w = slot.pet;
-    if (w) { w.station = null; w.slot = null; }
-    slot.pet = null;
-    this.refreshSlot(slot);
-    this.refreshHud();
+  drawBackground() {
+    const g = this.add.graphics().setDepth(0);
+    const t = 38;
+    for (let yy = 0; yy < H; yy += t)
+      for (let xx = 0; xx < W; xx += t) {
+        const alt = (Math.floor(xx/t) + Math.floor(yy/t)) % 2 === 0;
+        g.fillStyle(alt ? COL.floor : COL.floorAlt, 1).fillRect(xx, yy, t, t);
+      }
   }
 
-  // ---------------- Onboarding ----------------
-  scriptedType(n) {
-    if (n <= 3) return 'dumpling';   // customers 1-3
-    if (n <= 6) return 'boba';       // customers 4-6
-    return null;                     // 7+ random
+  buildHud() {
+    this.add.rectangle(W/2, 24, W, 48, COL.brown).setDepth(50);
+    this.coinLabel = this.add.text(12, 24, '', { fontFamily:FONT, fontSize:'21px', color:'#FAF4EA', fontStyle:'700' }).setOrigin(0,0.5).setDepth(51);
+    this.statLabel = this.add.text(W-12, 24, '', { fontFamily:FONT, fontSize:'13px', color:'#FAF4EA' }).setOrigin(1,0.5).setDepth(51);
   }
 
-  setPhase(p) { this.tutPhase = p; this.refreshBuildPads(); this.refreshToolbar(); this.refreshQuests(); this.updateTutorialTip(); }
+  refreshHud() {
+    this.coinLabel.setText('💰 ' + Math.floor(G.coins));
+    const wage = G.workers.length * WAGE_PER_SEC;
+    const wageStr = G.workers.length ? '   💸-' + (Number.isInteger(wage) ? wage : wage.toFixed(1)) + '/s' : '';
+    this.statLabel.setText('🐾 ' + G.workers.length + wageStr);
+  }
 
-  setStepHint(msg) { this.stepHint = msg || ''; this.setHint(this.stepHint); }
+  buildCard(id, y, h) {
+    const cfg = STALLS[id], cx = W/2, cardW = 334, left = cx - cardW/2;
+    const g = this.add.graphics().setDepth(4);
+    const open = cfg.state === 'open';
+    g.fillStyle(COL.card, open ? 1 : 0.85).fillRoundedRect(left, y, cardW, h, 18);
+    g.lineStyle(3, cfg.accent, open ? 1 : 0.5).strokeRoundedRect(left, y, cardW, h, 18);
 
-  hasStation(type) { return this.stations.some(s => s.type === type); }
-  getStation(type) { return this.stations.find(s => s.type === type) || null; }
+    this.add.text(left + 46, y + 52, cfg.emoji, { fontSize:'46px' }).setOrigin(0.5).setDepth(5).setAlpha(open ? 1 : 0.5);
+    this.add.text(left + 84, y + 30, cfg.name, { fontFamily:FONT, fontSize:'19px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0,0.5).setDepth(5);
 
-  // Which recipe (if any) the player may build right now.
-  isLocked(type) { return LOCKED_TYPES.includes(type); }
+    const status = this.add.text(left + 84, y + 58, '', { fontFamily:FONT, fontSize:'12px', color:hex(COL.dim), fontStyle:'700', lineSpacing:3, wordWrap:{ width: cardW - 100 } }).setOrigin(0,0).setDepth(5);
 
-  canBuildPhase(type) {
-    if (this.isLocked(type)) return false;
-    switch (this.tutPhase) {
-      case 'done':
-      case 'h-earn':
-      case 'h-hire':
-      case 'h-assign':
-      case 'h-tables':
-      case 'grand-ready': return true;         // free play
-      case 'setup':   return type === 'dumpling' && this.currentSetupStep() === 0;
-      case 'b-build': return type === 'boba';
-      default:        return false;           // open-ready, d-supply, d-run, b-move
+    // Right-hand action: ENTER for open stalls; a price/lock otherwise.
+    let btn = null;
+    if (open) {
+      btn = makeButton(this, cx, y + h - 30, cardW - 28, 42, COL.btn, 'ENTER  →', '17px', 6);
+    } else if (cfg.state === 'locked') {
+      this.add.text(cx, y + h - 30, '🔒  Opens soon  ·  ' + cfg.cost + ' 💰', { fontFamily:FONT, fontSize:'14px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5).setDepth(6);
+    } else {
+      this.add.text(cx, y + h - 30, '🔒  Coming soon', { fontFamily:FONT, fontSize:'14px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5).setDepth(6);
+    }
+    return { id, cfg, status, btn };
+  }
+
+  refreshCards() {
+    for (const c of this.cards) {
+      if (c.cfg.state !== 'open') continue;
+      const s = G.stalls[c.id], ing = c.cfg.ingredient, r = recipeOf(c.id);
+      const learned = r.steps.filter((_, k) => isLearned(c.id, k)).length;
+      let txt;
+      if (isAutomated(c.id)) {
+        const rate = (r.value / (cycleMs(c.id) / 1000));
+        txt = (G.pantry[ing] > 0)
+          ? '🤖 Running on its own  ·  +' + rate.toFixed(1) + '/s\nServed ' + s.served + '   ·   ' + INGREDIENTS[ing].emoji + ' ' + G.pantry[ing] + ' left'
+          : '⚠️ Out of ' + INGREDIENTS[ing].emoji + ' — step in to restock\nServed ' + s.served;
+      } else if (workersAt(c.id).length > 0) {
+        txt = '👋 Helper waiting — train every step (' + learned + '/' + r.steps.length + ')\nServed ' + s.served;
+      } else {
+        txt = (s.served > 0 ? 'Served ' + s.served + '  ·  ' : '') + 'Tap to cook by hand 👆\nLearn the steps, then hire a helper';
+      }
+      c.status.setText(txt);
     }
   }
 
-  // tutorial phases that behave like normal play for building/managing helpers
-  inFreePlay() { return this.tutPhase === 'done' || this.tutPhase === 'h-earn' || this.tutPhase === 'h-hire' || this.tutPhase === 'h-assign' || this.tutPhase === 'h-tables' || this.tutPhase === 'grand-ready'; }
-
-  // hint shown when a gated control is tapped before its phase
-  tutHint() {
-    if (this.tutPhase === 'setup') return this.setupHint();
-    return {
-      'open-ready':'Press OPEN THE STORE to start serving',
-      'd-supply'  :'Supply the 🥟 stall — tap the 🌾 above it',
-      'd-run'     :'Let your helper serve these first…',
-      'b-build'   :'Build the 🧋 stall first',
-      'b-move'    :'Move your helper to the 🧋 stall',
-      'h-earn'    :'Keep serving to save up ' + COST.pet + ' 💰',
-      'h-hire'    :'Hire your new helper first 🐾',
-      'h-assign'  :'Put a helper on each station 🐾',
-      'h-tables'  :'Get to 3 tables for your grand opening 🪑',
-      'grand-ready':'Press GRAND OPENING to cut the ribbon! 🎉',
-    }[this.tutPhase] || '';
+  makeHintPill() {
+    const bg = this.add.graphics().setDepth(70);
+    const txt = this.add.text(W/2, H-40, '', { fontFamily:FONT, fontSize:'13px', color:hex(COL.brown), fontStyle:'700', align:'center' }).setOrigin(0.5).setDepth(71);
+    return { bg, txt, show:(m)=>{ txt.setText(m); const w=txt.width+26,h=txt.height+14; bg.clear(); bg.fillStyle(COL.card,0.96).fillRoundedRect(W/2-w/2,H-40-h/2,w,h,11); bg.lineStyle(2,COL.dim,1).strokeRoundedRect(W/2-w/2,H-40-h/2,w,h,11); this.time.delayedCall(1600,()=>{ if(txt.text===m){txt.setText('');bg.clear();} }); } };
   }
 
-  // ----- Setup: a strict 5-step sequence, one action enabled at a time -----
-  builtTables()     { return this.waitSpots.filter(s => s.state === 'built').length; }
-  // Open locked table spots for purchase (e.g. after the grand opening).
-  unlockTables(indices) {
-    indices.forEach(i => { if (this.waitSpots[i] && this.waitSpots[i].state === 'locked') this.waitSpots[i].state = 'available'; });
-    this.refreshTables();
-  }
-  dumplingStaffed() { const st = this.getStation('dumpling'); return !!(st && this.activeSlots(st).some(sl => sl.pet)); }
-  // Every built station has at least one helper (the Grand Opening "both stations" goal).
-  bothStationsStaffed() { return this.stations.length >= 2 && this.stations.every(st => this.activeSlots(st).some(sl => sl.pet)); }
-
-  // The current setup step (0..4); each step's action is enabled only on its turn.
-  currentSetupStep() {
-    if (!this.hasStation('dumpling')) return 0;   // build the 🥟 stall
-    if (this.workers.length === 0)    return 1;   // hire a helper
-    if (!this.dumplingStaffed())      return 2;   // assign the helper
-    if (this.builtTables() === 0)     return 3;   // buy a table
-    return 4;                                     // open the store
-  }
-  setupComplete() { return this.currentSetupStep() >= 4; }
-  // Buying a table is allowed in free play, and during setup only on the table step.
-  tableBuyable()  { return this.tutPhase !== 'setup' || this.currentSetupStep() === 3; }
-
-  setupHint() {
-    return [
-      'Step 1: build the 🥟 stall — tap its slot',
-      'Step 2: hire a helper 🐾',
-      'Step 3: assign your helper — tap the 🥟 stall’s worker slot',
-      'Step 4: buy a table — tap the green table',
-      'Step 5: press OPEN THE STORE',
-    ][this.currentSetupStep()];
-  }
-
-  // Called after each setup action; re-gates everything and shows OPEN when done.
-  checkSetup() {
-    if (this.tutPhase !== 'setup') return;
-    this.refreshQuests(); this.refreshToolbar(); this.refreshBuildPads(); this.refreshTables();
-    if (this.setupComplete()) { this.setPhase('open-ready'); this.showOpenButton(true, 'OPEN THE STORE 🎉'); }
-    this.updateTutorialTip();   // show/hide the step's anchored bubble
-  }
-
-  // The OPEN THE STORE button — pressed once; customers then flow forever.
-  openStore() {
-    if (this.storeOpen) return;
-    this.storeOpen = true;
-    this.showOpenButton(false);
-    this.setPhase('d-supply');   // the anchored story bubble takes over from here
-    this.trySpawn();   // customer #1
-  }
-
-  startSpawnLoop() {
-    if (this.spawnStarted) return;
-    this.spawnStarted = true;
-    this.time.addEvent({ delay: SPAWN_MS, loop: true, callback: this.trySpawn, callbackScope: this });
-    this.time.delayedCall(SPAWN_MS, this.trySpawn, [], this);
-  }
-
-  // Phase D: boba stall built but empty; you only have one helper — move them over.
-  startBobaMoveStep(st) {
-    this.bobaStation = st;
-    this.setPhase('b-move');   // the anchored bubble prompts moving the helper
-  }
-
-  // Phase E: boba helper assigned — start the standalone "Hire a 2nd helper" quest.
-  finishBobaStep() {
-    this.setPhase('h-earn');
-  }
-
-  // Triggered when the player first saves up enough to hire: nudge them to do it.
-  maybeAdviseHire() {
-    if (this.tutPhase !== 'h-earn' || this.coins < COST.pet) return;
-    this.setPhase('h-hire');   // the anchored bubble + button pulse prompt the 2nd hire
-  }
-
-  // Both stations staffed — advance to the "3 tables total" goal. If the player
-  // already has 3 tables, the big GRAND OPENING button is ready right away.
-  startTableStep() {
-    this.setPhase('h-tables');
-    if (this.builtTables() >= 3) this.grandOpeningReady();   // tables already bought → ready to open
-  }
-
-  // All "Grand Opening" goals met — show the big "GRAND OPENING!" button to press
-  // (mirrors the "OPEN THE STORE" moment) instead of celebrating automatically.
-  grandOpeningReady() {
-    if (this.tutPhase === 'grand-ready' || this.tutPhase === 'done') return;
-    this.setPhase('grand-ready');
-    this.showOpenButton(true, 'GRAND OPENING! 🎉');
-  }
-
-  // The player pressed the big button — throw the celebration and finish the tutorial.
-  grandOpen() {
-    this.showOpenButton(false);
-    this.setPhase('done'); this.setStepHint('');
-    this.coins += GRAND_OPENING_BONUS;
-    this.refreshHud(); this.refreshToolbar();
-    this.showGrandOpening();                         // stays until the player taps to begin
-  }
-
-  // ---------------- Quest tracker ----------------
-  buildQuestTracker() {
-    this.questBg = this.add.graphics().setDepth(54);
-    this.questTitle = this.add.text(W/2, 0, '', { fontFamily:'system-ui,sans-serif', fontSize:'15px', color:hex(COL.brown), fontStyle:'700' }).setOrigin(0.5).setDepth(55);
-    this.questRows = [];
-    for (let i = 0; i < 5; i++) this.questRows.push(this.add.text(0, 0, '', { fontFamily:'system-ui,sans-serif', fontSize:'12px', fontStyle:'700' }).setOrigin(0, 0.5).setDepth(55).setVisible(false));
-  }
-
-  // The checklist for the current stage, or null once the tutorial is done.
-  questList() {
-    const cap3 = (n) => Math.min(n, 3);
-    switch (this.tutPhase) {
-      case 'setup':
-      case 'open-ready':
-        return { title:'📋 Open your café!', items:[
-          { t:'Build the dumpling stall 🥟', done:this.hasStation('dumpling') },
-          { t:'Hire a helper 🐾',            done:this.workers.length > 0 },
-          { t:'Assign the helper to 🥟',     done:this.dumplingStaffed() },
-          { t:'Buy a table 🪑',              done:this.builtTables() > 0 },
-          { t:'Open the store 🎉',           done:this.storeOpen },
-        ]};
-      case 'd-supply':
-        return { title:'📋 Stock the kitchen', items:[
-          { t:'Supply the 🥟 stall (tap 🌾)', done:this.pantry.dough > 0 },
-        ]};
-      case 'd-run':
-        return { title:'📋 Serve your guests', items:[
-          { t:'Serve dumpling orders (' + cap3(this.served) + '/3)', done:this.served >= 3 },
-        ]};
-      case 'b-build':
-        return { title:'📋 Expand the menu', items:[
-          { t:'Build the boba stall 🧋', done:this.hasStation('boba') },
-        ]};
-      case 'b-move':
-        return { title:'📋 Staff the boba stall', items:[
-          { t:'Move a helper to 🧋', done:!!(this.getStation('boba') && this.activeSlots(this.getStation('boba')).some(s => s.pet)) },
-        ]};
-      case 'h-earn':
-      case 'h-hire':
-        return { title:'🐾 Hire a 2nd helper', items:[
-          { t:'Save up ' + COST.pet + ' 💰', done:this.tutPhase !== 'h-earn' },
-          { t:'Hire your new helper 🐾', done:this.workers.length >= 2 },
-        ]};
-      case 'h-assign':
-      case 'h-tables':
-      case 'grand-ready':
-        return { title:'🎉 Grand Opening', items:[
-          { t:'Have helpers at both stations 🐾', done:this.bothStationsStaffed() },
-          { t:'Have a total of 3 tables 🪑', done:this.builtTables() >= 3 },
-          { t:'Grand opening 🎉', done:false },
-        ]};
-      default:
-        return null;   // done
+  handleTap(px, py) {
+    for (const c of this.cards) {
+      if (c.cfg.state === 'open' && c.btn && hitBtn(px, py, c.btn)) { this.scene.start('stall', { id: c.id }); return; }
+      // tapping the card body of an open stall also enters
     }
-  }
-
-  refreshQuests() {
-    if (!this.questRows) return;
-    const q = this.questList();
-    this.questBg.clear();
-    this.questRows.forEach(r => r.setVisible(false));
-    if (!q) { this.questTitle.setVisible(false); return; }
-    const cardW = 330, rowH = 25, headH = 30, top = 336, cx = W/2, left = cx - cardW/2;
-    const cardH = headH + q.items.length*rowH + 10;
-    this.questBg.fillStyle(COL.card, 0.95).fillRoundedRect(left, top, cardW, cardH, 14);
-    this.questBg.lineStyle(2, COL.brown, 1).strokeRoundedRect(left, top, cardW, cardH, 14);
-    this.questTitle.setVisible(true).setText(q.title).setPosition(cx, top + 15);
-    const current = q.items.findIndex(it => !it.done);   // the step you're on now
-    q.items.forEach((it, i) => {
-      const r = this.questRows[i];
-      r.setVisible(true).setPosition(left + 18, top + headH + rowH*i + rowH/2);
-      let mark = '⬜ ', col = COL.dim;
-      if (it.done)          { mark = '✅ '; col = COL.green; }
-      else if (i === current) { mark = '▶ '; col = COL.brown; }
-      r.setText(mark + it.t).setColor(hex(col));
+    // body taps: open → enter, locked/soon → explain
+    const top = 150, cardH = 184, gap = 16;
+    STALL_ORDER.forEach((id, i) => {
+      const y = top + i*(cardH+gap);
+      if (py >= y && py <= y + cardH) {
+        const cfg = STALLS[id];
+        if (cfg.state === 'open') this.scene.start('stall', { id });
+        else if (cfg.state === 'locked') this.hintPill.show('🧋 The boba stall opens in the next update!');
+        else this.hintPill.show('🍜 Noodles are coming soon!');
+      }
     });
   }
 
-  // ---------------- OPEN THE STORE button ----------------
-  buildOpenButton() {
-    const x = W/2, y = 650, w = 260, h = 64;
-    const rect = this.add.rectangle(x, y, w, h, COL.btn).setStrokeStyle(3, COL.brown).setDepth(58).setVisible(false);
-    const txt = this.add.text(x, y, 'OPEN THE STORE 🎉', { fontFamily:'system-ui,sans-serif', fontSize:'19px', color:'#FFFFFF', fontStyle:'700' }).setOrigin(0.5).setDepth(59).setVisible(false);
-    this.openBtn = { x, y, w, h, rect, txt, tween:null };
+  update(time, delta) {
+    tickWages(delta);
+    tickPassive(delta, null);   // every automated stall earns while you're in the market
+    this.refreshHud();
+    this.refreshCards();
+  }
+}
+
+/* ============================================================================
+   STALL SCENE — the cooking floor for one stall
+   ========================================================================== */
+const PREP_Y    = 250;   // the row of recipe step-buttons
+const TOKEN_Y   = 168;   // the in-progress dish hovers above the current step
+const TRAY_Y    = 360;   // finished dishes line the pickup tray
+const COUNTER_Y = 430;   // the serving counter band
+const QUEUE_Y   = [560, 622, 684, 746];   // front of line → back toward the door
+const DOOR      = { x: W/2, y: 828 };
+
+class Stall extends Phaser.Scene {
+  constructor() { super('stall'); }
+
+  create(data) {
+    this.id = data.id;
+    this.cfg = STALLS[this.id];
+    this.recipe = recipeOf(this.id);
+    this.stall = G.stalls[this.id];
+
+    // The single dish currently being assembled on the line.
+    this.dish = { step: 0, performing: false, prog: 0, manual: false, consumed: false };
+    this.tray = [];        // finished-dish tokens waiting on the pickup tray
+    this.customers = [];
+    this.spawnAcc = SPAWN_MS * 0.4;
+
+    this.drawRoom();
+    this.buildHud();
+    this.buildPantryChip();
+    this.buildPrepLine();
+    this.buildTray();
+    this.buildHelper();
+    this.buildHintPill();
+    this.buildDishToken();
+    this.refreshAll();
+
+    this.input.on('pointerdown', p => this.handleTap(p.x, p.y));
   }
 
-  showOpenButton(v, label) {
-    if (label) this.openBtn.txt.setText(label);
-    this.openBtn.rect.setVisible(v);
-    this.openBtn.txt.setVisible(v);
-    if (v && !this.openBtn.tween) {
-      this.openBtn.tween = this.tweens.add({ targets:[this.openBtn.rect, this.openBtn.txt], scaleX:1.05, scaleY:1.05, duration:600, yoyo:true, repeat:-1, ease:'Sine.InOut' });
-    } else if (!v && this.openBtn.tween) {
-      this.openBtn.tween.stop(); this.openBtn.tween = null;
-      this.openBtn.rect.setScale(1); this.openBtn.txt.setScale(1);
-    }
-  }
-
-  // A reusable speech bubble that anchors at a UI element during a tutorial step
-  // and stays until the step is done. Tail direction: 'up' or 'left'.
-  buildTipBubble() {
-    this.hl = this.add.graphics().setDepth(56);   // pulsing highlight rings (tutorial + demand)
-    this.tutHL = null;                            // shape highlighted for the current tutorial step
-    this.tip = this.add.container(0, 0).setDepth(57).setVisible(false);
-    this.tipBg = this.add.graphics();
-    this.tipTxt = this.add.text(0, 0, '', { fontFamily:'system-ui,sans-serif', fontSize:'12px', color:hex(COL.brown), fontStyle:'700', align:'center', wordWrap:{ width: 188 } }).setOrigin(0.5);
-    this.tip.add([this.tipBg, this.tipTxt]);
-  }
-
-  // Pulsing rings: the current tutorial target, plus empty slots with a waiting customer.
-  drawHighlights(time) {
-    if (!this.hl) return;
-    const g = this.hl; g.clear();
-    const t = 0.5 + 0.5 * Math.sin(time / 260);
-    const lw = 3 + 2 * t, a = 0.35 + 0.5 * t;
-    if (this.tutHL) this.strokeHL(this.tutHL, COL.btn, a, lw);          // tutorial: green "tap here"
-    if (this.tutPhase === 'done') {                                    // free play: red "staff me"
-      for (const st of this.stations) {
-        if (!this.customers.some(c => c.state === 'waiting' && !c.claimed && c.type === st.type)) continue;
-        for (const sl of this.activeSlots(st)) if (!sl.pet) this.strokeHL({ kind:'circle', x:sl.sx, y:sl.sy, r:17 }, COL.red, a, lw);
-      }
-    }
-  }
-
-  strokeHL(s, color, alpha, lw) {
-    const g = this.hl;
-    g.lineStyle(lw, color, alpha);
-    if (s.kind === 'circle') g.strokeCircle(s.x, s.y, s.r);
-    else g.strokeRoundedRect(s.x - s.w/2, s.y - s.h/2, s.w, s.h, 12);
-  }
-
-  showTip(text, x, y, dir) {
-    const txt = this.tipTxt; txt.setText(text);
-    const w = txt.width + 22, h = txt.height + 12, bg = this.tipBg;
-    const M = 8;   // keep the bubble at least this far from the screen edges
-    // Clamp the box on-screen, then point the tail back at the real anchor (x,y).
-    const cx = Phaser.Math.Clamp(x, M + w/2, W - M - w/2);
-    const cy = Phaser.Math.Clamp(y, M + h/2, H - M - h/2);
-    const tx = Phaser.Math.Clamp(x - cx, -w/2 + 12, w/2 - 12);   // tail offset along the box (up/down)
-    const ty = Phaser.Math.Clamp(y - cy, -h/2 + 10, h/2 - 10);   // tail offset along the box (left)
-    bg.clear();
-    bg.fillStyle(COL.card, 0.97).fillRoundedRect(-w/2, -h/2, w, h, 10);
-    if (dir === 'up')   bg.fillStyle(COL.card, 0.97).fillTriangle(tx-8, -h/2 + 2, tx+8, -h/2 + 2, tx, -h/2 - 9);
-    if (dir === 'down') bg.fillStyle(COL.card, 0.97).fillTriangle(tx-8,  h/2 - 2, tx+8,  h/2 - 2, tx,  h/2 + 9);
-    if (dir === 'left') bg.fillStyle(COL.card, 0.97).fillTriangle(-w/2 + 2, ty-7, -w/2 + 2, ty+7, -w/2 - 9, ty);
-    bg.lineStyle(2, COL.brown, 1).strokeRoundedRect(-w/2, -h/2, w, h, 10);
-    if (dir === 'up')   { bg.lineBetween(tx-8, -h/2, tx, -h/2 - 9); bg.lineBetween(tx+8, -h/2, tx, -h/2 - 9); }
-    if (dir === 'down') { bg.lineBetween(tx-8,  h/2, tx,  h/2 + 9); bg.lineBetween(tx+8,  h/2, tx,  h/2 + 9); }
-    if (dir === 'left') { bg.lineBetween(-w/2, ty-7, -w/2 - 9, ty); bg.lineBetween(-w/2, ty+7, -w/2 - 9, ty); }
-    this.tip.setPosition(cx, cy).setVisible(true);
-  }
-  hideTip() { if (this.tip) this.tip.setVisible(false); }
-
-  // Anchor a persistent story bubble to whatever control the current step needs.
-  // The bubble carries the story beat AND the action, and stays until you act.
-  updateTutorialTip() {
-    if (!this.tip) return;
-    const ph = this.tutPhase;
-    const step = ph === 'setup' ? this.currentSetupStep() : -1;
-    const dump = this.getStation('dumpling'), boba = this.getStation('boba');
-    const hiring = (ph === 'setup' && step === 1) || ph === 'h-hire';
-    this.pulseHire(hiring);   // draw the eye to the Hire button on both hire steps
-    this.tutHL = null;
-
-    if (ph === 'setup' && step === 0) {                       // build the 🥟 stall
-      const pad = this.slots[0];
-      this.showTip('Let’s open! Build a 🥟 stall 👆', pad.x, pad.y + 62, 'up');
-      this.tutHL = { kind:'rect', x:pad.x, y:pad.y + 4, w:106, h:138 };
-    } else if (ph === 'setup' && step === 1) {                // hire the first helper
-      this.showTip('Hire a helper! 🐾', 288, 116, 'up');
-    } else if (ph === 'h-hire') {                             // hire the second helper
-      this.showTip('Hire a 2nd helper! 🐾', 288, 116, 'up');
-    } else if (ph === 'h-assign') {                           // staff the other station
-      let slot = null;
-      for (const st of this.stations) { const e = this.firstEmptySlot(st); if (e) { slot = e; break; } }
-      if (slot) {
-        this.showTip('Staff both stations! 👆', slot.sx, slot.sy + 40, 'up');
-        this.tutHL = { kind:'circle', x:slot.sx, y:slot.sy, r:18 };
-      } else {
-        this.showTip('Put a helper on each station 🐾', W/2, 300, 'down');
-      }
-    } else if (ph === 'h-tables') {                           // reach 3 tables total
-      const t = this.waitSpots.find(s => s.state === 'available');
-      if (t) {
-        this.showTip('Add tables — 3 in total! 👆', t.x, TABLE_Y + 32, 'up');
-        this.tutHL = { kind:'rect', x:t.x, y:TABLE_Y, w:54, h:32 };
-      } else {
-        this.showTip('Get to 3 tables for your grand opening 🪑', W/2, 300, 'down');
-      }
-    } else if (ph === 'setup' && step === 2 && dump) {        // assign the helper
-      const slot = this.activeSlots(dump)[0];
-      this.showTip('Put them to work 👆', slot.sx, slot.sy + 40, 'up');
-      this.tutHL = { kind:'circle', x:slot.sx, y:slot.sy, r:18 };
-    } else if (ph === 'setup' && step === 3) {                // buy the (middle) table
-      const t = this.waitSpots[2];
-      this.showTip('Guests need a seat! 👆', t.x, TABLE_Y + 32, 'up');
-      this.tutHL = { kind:'rect', x:t.x, y:TABLE_Y, w:54, h:32 };
-    } else if (ph === 'd-supply' && dump) {                   // supply the 🥟 stall (dough chip)
-      this.showTip('Out of dough! Tap 🌾 👈', dump.x + 108, PANTRY_Y, 'left');
-      this.tutHL = { kind:'rect', x:dump.x, y:PANTRY_Y, w:84, h:38 };
-    } else if (ph === 'b-build') {                            // build the 🧋 stall
-      const pad = this.slots[1];
-      this.showTip('A 🧋 order! Build it 👆', pad.x, pad.y + 62, 'up');
-      this.tutHL = { kind:'rect', x:pad.x, y:pad.y + 4, w:106, h:138 };
-    } else if (ph === 'b-move' && boba) {                     // staff the 🧋 stall
-      const slot = this.activeSlots(boba)[0];
-      this.showTip('Move a helper to 🧋 👆', slot.sx, slot.sy + 40, 'up');
-      this.tutHL = { kind:'circle', x:slot.sx, y:slot.sy, r:18 };
-    } else {
-      this.hideTip();
-    }
-  }
-
-  // Pulse the Hire toolbar button (used to highlight the hire steps).
-  pulseHire(on) {
-    const b = this.buttons && this.buttons[0];
-    if (!b) return;
-    if (on && !b.tween) {
-      b.tween = this.tweens.add({ targets:[b.rect, b.txt], scaleX:1.06, scaleY:1.06, duration:550, yoyo:true, repeat:-1, ease:'Sine.InOut' });
-    } else if (!on && b.tween) {
-      b.tween.stop(); b.tween = null; b.rect.setScale(1); b.txt.setScale(1);
-    }
-  }
-
-  // The big tutorial → real-game send-off. Freezes play and stays until tapped.
-  showGrandOpening() {
-    this.updateTutorialTip();   // clears the hire bubble/pulse (we're 'done' now)
-    const cx = W/2, cy = 420, pw = 322, ph = 300;
-    const cont = this.add.container(0, 0).setDepth(98);
-    cont.add(this.add.rectangle(W/2, H/2, W, H, 0x2A211B, 0.62));
-    const g = this.add.graphics();
-    g.fillStyle(COL.card, 1).fillRoundedRect(cx-pw/2, cy-ph/2, pw, ph, 20);
-    g.lineStyle(4, COL.amber, 1).strokeRoundedRect(cx-pw/2, cy-ph/2, pw, ph, 20);
-    cont.add(g);
-    cont.add(this.add.text(cx, cy-92, '🎉', { fontSize:'58px' }).setOrigin(0.5));
-    cont.add(this.add.text(cx, cy-32, 'GRAND OPENING!', { fontFamily:'system-ui,sans-serif', fontSize:'25px', color:hex(COL.red), fontStyle:'800' }).setOrigin(0.5));
-    cont.add(this.add.text(cx, cy+6, 'Your café is open for business!', { fontFamily:'system-ui,sans-serif', fontSize:'14px', color:hex(COL.brown), fontStyle:'700' }).setOrigin(0.5));
-    cont.add(this.add.text(cx, cy+40, '+' + GRAND_OPENING_BONUS + ' 💰 bonus  ·  new tables unlocked\nyour staff now earn a wage', { fontFamily:'system-ui,sans-serif', fontSize:'12px', color:hex(COL.dim), fontStyle:'700', align:'center' }).setOrigin(0.5));
-    const tap = this.add.text(cx, cy+98, 'Tap to start serving →', { fontFamily:'system-ui,sans-serif', fontSize:'16px', color:hex(COL.btn), fontStyle:'800' }).setOrigin(0.5);
-    cont.add(tap);
-    this.tweens.add({ targets: tap, alpha: 0.35, duration: 650, yoyo:true, repeat:-1, ease:'Sine.InOut' });
-    this.grandOpening = cont;
-  }
-
-  closeGrandOpening() {
-    if (!this.grandOpening) return;
-    this.grandOpening.destroy();
-    this.grandOpening = null;
-  }
-
-  // ---------------- Room ----------------
+  // ---------------- Layout / room ----------------
   drawRoom() {
     const g = this.add.graphics().setDepth(0);
     const t = 38;
@@ -611,714 +347,290 @@ class Cafe extends Phaser.Scene {
         g.fillStyle(alt ? COL.floor : COL.floorAlt, 1).fillRect(xx, yy, t, t);
       }
     g.fillStyle(COL.wall, 1);
-    g.fillRect(0, 96, W, 10);
-    g.fillRect(0, 96, 10, H-96);
-    g.fillRect(W-10, 96, 10, H-96);
-    g.fillRect(0, H-10, W, 10);
-    g.fillStyle(COL.floor, 1).fillRect(DOOR.x-38, H-10, 76, 10);     // doorway
-    g.fillStyle(COL.tan, 0.55).fillRoundedRect(DOOR.x-40, H-54, 80, 42, 8); // mat
-    g.fillStyle(COL.counter, 1).fillRoundedRect(24, 300, W-48, 26, 8); // counter band
-
-    // each empty slot shows a tappable "Build <recipe> <cost>" pad
-    this.slots.forEach(s => this.makeBuildPad(s));
-    this.add.text(W/2, 648, 'waiting area', { fontFamily:'system-ui,sans-serif', fontSize:'12px', color:hex(COL.dim) }).setOrigin(0.5);
-
-    // a table under each waiting spot — built (solid), available (tap to buy), or locked
-    this.tableMarks  = this.waitSpots.map(() => this.add.graphics().setDepth(1));
-    this.tableLabels = this.waitSpots.map(() => this.add.text(0, 0, '', { fontFamily:'system-ui,sans-serif', fontSize:'10px', fontStyle:'700' }).setOrigin(0.5).setDepth(2));
-    this.refreshTables();
+    g.fillRect(0, 96, W, 8);
+    g.fillRect(0, H-8, W, 8);
+    g.fillStyle(COL.floor, 1).fillRect(DOOR.x-38, H-8, 76, 8);                       // doorway
+    g.fillStyle(COL.counter, 1).fillRoundedRect(20, COUNTER_Y-13, W-40, 26, 8);      // serving counter
+    this.add.text(W/2, 145, 'PREP LINE', { fontFamily:FONT, fontSize:'11px', color:hex(COL.dim), fontStyle:'800' }).setOrigin(0.5).setDepth(2);
+    this.add.text(W/2, COUNTER_Y+24, 'waiting line', { fontFamily:FONT, fontSize:'11px', color:hex(COL.dim) }).setOrigin(0.5).setDepth(2);
   }
 
-  // Draw each table by state: built = solid, available = green "buy" outline, locked = faint + 🔒.
-  refreshTables() {
-    this.waitSpots.forEach((s, i) => {
-      const g = this.tableMarks[i], lbl = this.tableLabels[i];
-      const tw = 44, th = 24, tx = s.x - 22, ty = TABLE_Y - th/2;
-      g.clear();
-      lbl.setPosition(s.x, ty + th/2).setText('');
-      if (s.state === 'built') {
-        g.fillStyle(COL.tan, 1).fillRoundedRect(tx, ty, tw, th, 7);
-        g.lineStyle(2, COL.brown, 1).strokeRoundedRect(tx, ty, tw, th, 7);
-      } else if (s.state === 'available' && this.tableBuyable()) {
-        g.fillStyle(COL.btn, 0.12).fillRoundedRect(tx, ty, tw, th, 7);
-        g.lineStyle(2.5, COL.btn, 1).strokeRoundedRect(tx, ty, tw, th, 7);
-        lbl.setText('+' + TABLE_COST + '💰').setColor(hex(COL.brown));
-      } else if (s.state === 'available') {   // unlocked, but not its turn yet — show dim
-        g.lineStyle(2, COL.dim, 0.5).strokeRoundedRect(tx, ty, tw, th, 7);
-        lbl.setText('🪑').setColor(hex(COL.dim));
-      } else { // locked
-        g.lineStyle(2, COL.dim, 0.4).strokeRoundedRect(tx, ty, tw, th, 7);
-        lbl.setText('🔒').setColor(hex(COL.dim));
-      }
+  buildHud() {
+    this.add.rectangle(W/2, 24, W, 48, this.cfg.accent).setDepth(50);
+    this.coinLabel = this.add.text(12, 24, '', { fontFamily:FONT, fontSize:'21px', color:'#FFFFFF', fontStyle:'700' }).setOrigin(0,0.5).setDepth(51);
+    this.statLabel = this.add.text(W-12, 24, '', { fontFamily:FONT, fontSize:'12px', color:'#FFFFFF' }).setOrigin(1,0.5).setDepth(51);
+
+    // Back-to-market button + stall name on the sub-bar.
+    this.add.rectangle(W/2, 72, W, 48, COL.cream).setDepth(50);
+    this.backBtn = makeButton(this, 52, 72, 76, 34, COL.brown, '← Market', '13px', 51);
+    this.add.text(W/2 + 6, 72, this.cfg.emoji + ' ' + this.cfg.name, { fontFamily:FONT, fontSize:'15px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5).setDepth(51);
+  }
+
+  // The stall's ingredient chip (top-right of the sub-bar): tap to restock.
+  buildPantryChip() {
+    const x = W - 60, y = 72;
+    this.pantryChip = { x, y, w: 92, h: 34 };
+    this.pantryChip.box = this.add.rectangle(x, y, 92, 34, COL.card).setStrokeStyle(2, COL.dim).setDepth(51);
+    this.pantryChip.txt = this.add.text(x, y-6, '', { fontFamily:FONT, fontSize:'14px', color:hex(COL.brown), fontStyle:'700' }).setOrigin(0.5).setDepth(52);
+    this.pantryChip.cap = this.add.text(x, y+9, '↺ ' + RESTOCK_COST + '💰', { fontFamily:FONT, fontSize:'9px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5).setDepth(52);
+  }
+
+  refreshPantryChip() {
+    const ing = this.cfg.ingredient, stock = G.pantry[ing];
+    let col = COL.brown; if (stock === 0) col = COL.red; else if (stock <= 3) col = COL.amber;
+    this.pantryChip.txt.setText(INGREDIENTS[ing].emoji + ' ' + stock).setColor(hex(col));
+    this.pantryChip.box.setStrokeStyle(2, stock === 0 ? COL.red : COL.dim);
+  }
+
+  // ---------------- Prep line (the tap-steps) ----------------
+  buildPrepLine() {
+    // Centered a touch left of middle so the helper column on the right has clear space.
+    const n = this.recipe.steps.length, gap = 92, startX = 168 - (n-1)*gap/2;
+    this.stepBtns = this.recipe.steps.map((s, i) => {
+      const x = startX + i*gap, y = PREP_Y, bw = 88, bh = 96;
+      const cont = this.add.container(x, y).setDepth(10);
+      const bg = this.add.graphics();
+      const emoji = this.add.text(0, -22, s.emoji, { fontSize:'30px' }).setOrigin(0.5);
+      const label = this.add.text(0, 8, s.label, { fontFamily:FONT, fontSize:'13px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5);
+      const mark  = this.add.text(0, 28, '', { fontFamily:FONT, fontSize:'11px', fontStyle:'800' }).setOrigin(0.5);
+      const meter = this.add.graphics();   // training meter (bottom) + perform progress (overlay)
+      cont.add([bg, emoji, label, mark, meter]);
+      return { i, x, y, bw, bh, cont, bg, emoji, label, mark, meter };
     });
   }
 
-  // ---------------- Pantry (shared ingredients) ----------------
-  // Each ingredient is shown as a tappable chip directly above the station that uses it.
-  buildPantry() {
-    this.pantryChips = {};
-    ['dough','tea','broth'].forEach(ing => {
-      const cont = this.add.container(0, PANTRY_Y).setDepth(51).setVisible(false);
-      const box  = this.add.rectangle(0, 0, 78, 32, COL.card).setStrokeStyle(2, COL.dim);
-      const txt  = this.add.text(0, -5, '', { fontFamily:'system-ui,sans-serif', fontSize:'15px', color:hex(COL.brown), fontStyle:'700' }).setOrigin(0.5);
-      const cap  = this.add.text(0, 10, '', { fontFamily:'system-ui,sans-serif', fontSize:'9px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5);
-      cont.add([box, txt, cap]);
-      this.pantryChips[ing] = { ing, cont, box, txt, cap, x:0, y:PANTRY_Y, halfW:39, halfH:16 };
+  // Draw one step button: frame reflects manual / learned / auto / active.
+  refreshStepBtn(i) {
+    const b = this.stepBtns[i], s = this.recipe.steps[i];
+    const learned = isLearned(this.id, i);
+    const auto = this.isAuto(i);
+    const isCurrent = this.dish.step === i;
+    const train = Phaser.Math.Clamp(this.stall.train[i], 0, 1);
+
+    b.bg.clear();
+    const frame = auto ? COL.blue : (isCurrent ? COL.btn : this.cfg.accent);
+    const fillA = isCurrent && !auto ? 0.18 : 0.10;
+    b.bg.fillStyle(frame, fillA).fillRoundedRect(-b.bw/2, -b.bh/2, b.bw, b.bh, 14);
+    b.bg.lineStyle(isCurrent ? 3.5 : 2.5, frame, 1).strokeRoundedRect(-b.bw/2, -b.bh/2, b.bw, b.bh, 14);
+
+    b.mark.setText(auto ? '🤖 auto' : (learned ? '✓ learned' : (isCurrent ? '👆 tap' : '')))
+          .setColor(hex(auto ? COL.blue : (learned ? COL.green : COL.brown)));
+
+    // training meter strip along the bottom of the button
+    const mw = b.bw - 20, mx = -mw/2, my = b.bh/2 - 11;
+    b.meter.clear();
+    b.meter.fillStyle(COL.cream, 1).fillRoundedRect(mx, my, mw, 5, 2);
+    b.meter.fillStyle(learned ? COL.green : COL.amber, 1).fillRoundedRect(mx, my, mw*train, 5, 2);
+  }
+
+  // Perform-progress arc drawn live while a step is being made.
+  drawStepProgress() {
+    this.stepBtns.forEach((b, i) => {
+      if (!(this.dish.performing && this.dish.step === i)) return;
+      const mw = b.bw - 20, mx = -mw/2, my = b.bh/2 - 11;
+      b.meter.clear();
+      // base training meter
+      const train = Phaser.Math.Clamp(this.stall.train[i], 0, 1);
+      const learned = isLearned(this.id, i);
+      b.meter.fillStyle(COL.cream, 1).fillRoundedRect(mx, my, mw, 5, 2);
+      b.meter.fillStyle(learned ? COL.green : COL.amber, 1).fillRoundedRect(mx, my, mw*train, 5, 2);
+      // perform ring across the top
+      const pw = b.bw - 20, px = -pw/2, py = -b.bh/2 + 6;
+      b.meter.fillStyle(COL.cream, 1).fillRoundedRect(px, py, pw, 6, 3);
+      b.meter.fillStyle(this.isAuto(i) ? COL.blue : COL.btn, 1).fillRoundedRect(px, py, pw*Phaser.Math.Clamp(this.dish.prog,0,1), 6, 3);
     });
-    this.pantryActive = [];
-    this.refreshPantry();
   }
 
-  // Ingredients worth showing: those a built stall actually uses.
-  activePantry() {
-    const set = new Set(this.stations.map(st => RECIPE_ING[st.type]));
-    return ['dough','tea','broth'].filter(k => set.has(k));
+  // ---------------- In-progress dish token ----------------
+  buildDishToken() {
+    this.token = this.add.text(this.stepBtns[0].x, TOKEN_Y, this.cfg.emoji, { fontSize:'30px' }).setOrigin(0.5).setDepth(12);
+    this.refreshToken();
   }
 
-  refreshPantry() {
-    if (!this.pantryChips) return;
-    Object.values(this.pantryChips).forEach(ch => ch.cont.setVisible(false));
-    this.pantryActive = [];
-    this.activePantry().forEach(ing => {
-      const st = this.stations.find(s => RECIPE_ING[s.type] === ing);
-      if (!st) return;
-      const ch = this.pantryChips[ing];
-      ch.cont.setVisible(true).setPosition(st.x, PANTRY_Y);
-      ch.x = st.x; ch.y = PANTRY_Y;
-      const stock = this.pantry[ing];
-      let col = COL.brown; if (stock === 0) col = COL.red; else if (stock <= 2) col = COL.amber;
-      ch.txt.setText(INGREDIENTS[ing].emoji + ' ' + stock).setColor(hex(col));
-      ch.cap.setText('↺ ' + RESTOCK_COST + '💰');
-      ch.box.setStrokeStyle(2, stock === 0 ? COL.red : COL.dim);
-      this.pantryActive.push(ch);
+  refreshToken() {
+    const steps = this.recipe.steps.length;
+    const k = Math.min(this.dish.step, steps - 1);
+    this.token.setX(this.stepBtns[k].x);
+    this.token.setAlpha(0.3 + 0.7 * (this.dish.step / steps));
+  }
+
+  // ---------------- Pickup tray ----------------
+  buildTray() {
+    const gap = 30, startX = W/2 - (TRAY_MAX-1)*gap/2;
+    this.trayPlates = [];
+    for (let i = 0; i < TRAY_MAX; i++) {
+      const x = startX + i*gap;
+      const plate = this.add.circle(x, TRAY_Y, 11, COL.btnOff).setStrokeStyle(2, this.cfg.accent).setDepth(8).setAlpha(0.35);
+      const dish  = this.add.text(x, TRAY_Y, '', { fontSize:'17px' }).setOrigin(0.5).setDepth(9);
+      this.trayPlates.push({ x, plate, dish });
+    }
+    this.add.text(W/2, TRAY_Y-26, 'pickup tray', { fontFamily:FONT, fontSize:'10px', color:hex(COL.dim) }).setOrigin(0.5).setDepth(8);
+  }
+
+  refreshTray() {
+    this.trayPlates.forEach((p, i) => {
+      const filled = i < this.tray.length;
+      p.dish.setText(filled ? this.cfg.emoji : '');
+      p.plate.setAlpha(filled ? 1 : 0.35);
     });
   }
 
-  // Tapping a chip opens a confirmation before the big spend.
-  openRestockConfirm(ing) {
-    this.closePicker(); this.closeMenu(); this.closeConfirm();
-    if (this.coins < RESTOCK_COST) { this.flashHint('Need ' + RESTOCK_COST + ' 💰 to restock'); return; }
-    const ig = INGREDIENTS[ing];
-    const cx = W/2, panelW = 286, panelH = 170, top = 340;
-    const cont = this.add.container(0, 0).setDepth(95);
-    cont.add(this.add.rectangle(W/2, H/2, W, H, 0x2A211B, 0.55));   // backdrop
-    const panel = this.add.graphics();
-    panel.fillStyle(COL.card, 1).fillRoundedRect(cx-panelW/2, top, panelW, panelH, 16);
-    panel.lineStyle(3, COL.brown, 1).strokeRoundedRect(cx-panelW/2, top, panelW, panelH, 16);
-    cont.add(panel);
-    cont.add(this.add.text(cx, top+30, 'Restock ' + ig.emoji + ' ' + ig.label + '?',
-      { fontFamily:'system-ui,sans-serif', fontSize:'17px', color:hex(COL.brown), fontStyle:'700' }).setOrigin(0.5));
-    cont.add(this.add.text(cx, top+64, 'Buy ' + RESTOCK_AMOUNT + ' ' + ig.emoji + ' for ' + RESTOCK_COST + ' 💰',
-      { fontFamily:'system-ui,sans-serif', fontSize:'15px', color:hex(COL.brown) }).setOrigin(0.5));
-    cont.add(this.add.text(cx, top+88, 'Balance ' + this.coins + ' 💰  →  ' + (this.coins - RESTOCK_COST) + ' 💰',
-      { fontFamily:'system-ui,sans-serif', fontSize:'12px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5));
-
-    const by = top + panelH - 36, bw = 120, bh = 42, gap = 14;
-    const buyX = cx - bw/2 - gap/2, cancelX = cx + bw/2 + gap/2;
-    cont.add(this.add.rectangle(buyX, by, bw, bh, COL.btn).setStrokeStyle(2, COL.brown));
-    cont.add(this.add.text(buyX, by, 'Buy  ' + RESTOCK_COST + ' 💰',
-      { fontFamily:'system-ui,sans-serif', fontSize:'15px', color:'#FFFFFF', fontStyle:'700' }).setOrigin(0.5));
-    cont.add(this.add.rectangle(cancelX, by, bw, bh, COL.btnOff).setStrokeStyle(2, COL.brown));
-    cont.add(this.add.text(cancelX, by, 'Cancel',
-      { fontFamily:'system-ui,sans-serif', fontSize:'15px', color:hex(COL.brown), fontStyle:'700' }).setOrigin(0.5));
-    this.confirm = { ing, cont, by, bh, buyX, cancelX, bw };
+  // ---------------- Helper ----------------
+  buildHelper() {
+    const x = W - 44, y = PREP_Y;
+    this.helperDot  = this.add.circle(x, y, 18, COL.btnOff).setStrokeStyle(2, this.cfg.accent).setDepth(11);
+    this.helperFace = this.add.text(x, y, '', { fontSize:'20px' }).setOrigin(0.5).setDepth(12);
+    this.helperLbl  = this.add.text(x, y+28, '', { fontFamily:FONT, fontSize:'10px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5).setDepth(12);
+    this.hireBtn = makeButton(this, x, y, 70, 40, COL.btn, 'Hire\n🐾', '12px', 13);
+    this.hireBtn.txt.setAlign('center');
   }
 
-  confirmTap(px, py) {
-    const c = this.confirm;
-    const onBtn = (bx) => Math.abs(px - bx) <= c.bw/2 && Math.abs(py - c.by) <= c.bh/2;
-    if (onBtn(c.buyX))    { const ing = c.ing; this.closeConfirm(); this.doRestock(ing); return; }
-    this.closeConfirm();   // Cancel button or tap outside
-  }
-
-  closeConfirm() {
-    if (!this.confirm) return;
-    this.confirm.cont.destroy();
-    this.confirm = null;
-  }
-
-  doRestock(ing) {
-    if (this.coins < RESTOCK_COST) { this.flashHint('Need ' + RESTOCK_COST + ' 💰 to restock'); return; }
-    this.coins -= RESTOCK_COST;
-    this.pantry[ing] += RESTOCK_AMOUNT;
-    this.refreshHud(); this.refreshPantry(); this.refreshToolbar();
-    this.flashHint('Restocked ' + INGREDIENTS[ing].emoji + ' +' + RESTOCK_AMOUNT);
-    // tutorial: supplying the 🥟 stall opens the dumpling rush
-    if (this.tutPhase === 'd-supply' && ing === 'dough') {
-      this.setPhase('d-run');
-      this.startSpawnLoop();
+  refreshHelper() {
+    const w = workersAt(this.id)[0];
+    const has = !!w;
+    this.hireBtn.rect.setVisible(!has);
+    this.hireBtn.txt.setVisible(!has);
+    if (!has) {
+      const afford = G.coins >= HIRE_COST;
+      this.hireBtn.rect.setFillStyle(afford ? COL.btn : COL.btnOff);
+      this.hireBtn.txt.setText('Hire 🐾\n' + HIRE_COST + '💰');
+      this.helperDot.setVisible(false); this.helperFace.setText(''); this.helperLbl.setText('');
     } else {
-      this.refreshQuests();
+      this.helperDot.setVisible(true).setFillStyle(COL.tan);
+      this.helperFace.setText(w.emoji);
+      this.helperLbl.setText(isAutomated(this.id) ? 'running 🤖' : 'learning…');
     }
   }
 
-  // ---------------- Build pads (per-slot) ----------------
-  makeBuildPad(slot) {
-    const type = slot.type, accent = ACCENT[type];
-    const cont = this.add.container(slot.x, slot.y).setDepth(2);
-    const bg = this.add.graphics();
-    bg.fillStyle(accent, 0.10).fillRoundedRect(-50, -62, 100, 132, 14);
-    bg.lineStyle(2, accent, 0.7).strokeRoundedRect(-50, -62, 100, 132, 14);
-    cont.add(bg);
-    cont.add(this.add.text(0, -30, ORDERS[type].emoji, { fontSize:'34px' }).setOrigin(0.5).setAlpha(0.9));
-    cont.add(this.add.text(0, 12, 'Build', { fontFamily:'system-ui,sans-serif', fontSize:'14px', color:hex(accent), fontStyle:'700' }).setOrigin(0.5));
-    const costTxt = this.add.text(0, 36, '', { fontFamily:'system-ui,sans-serif', fontSize:'14px', color:hex(COL.brown), fontStyle:'700' }).setOrigin(0.5);
-    cont.add(costTxt);
-    const lock = this.add.text(36, -46, '🔒', { fontSize:'16px' }).setOrigin(0.5).setVisible(false);
-    cont.add(lock);
-    slot.pad = { cont, costTxt, lock, type };
-  }
-
-  refreshBuildPads() {
-    if (!this.slots) return;
-    this.slots.forEach(s => {
-      const pad = s.pad; if (!pad) return;
-      if (s.station) { pad.cont.setVisible(false); return; }
-      if (this.isLocked(pad.type)) {   // reserved for a future update: shown, dimmed, locked
-        pad.cont.setVisible(true).setAlpha(0.4);
-        pad.costTxt.setText('Coming soon').setColor(hex(COL.dim));
-        pad.lock.setVisible(true);
-        return;
-      }
-      const affordable = this.coins >= COST[pad.type];
-      const active = this.canBuildPhase(pad.type);
-      pad.cont.setVisible(true).setAlpha(active ? 1 : 0.35);
-      pad.costTxt.setText(COST[pad.type] + ' 💰').setColor(affordable ? hex(COL.brown) : hex(COL.red));
-      pad.lock.setVisible(!active);
-    });
-  }
-
-  // ---------------- HUD + toolbar ----------------
-  buildHud() {
-    this.add.rectangle(W/2, 24, W, 48, COL.brown).setDepth(50);
-    this.coinLabel = this.add.text(12, 24, '', { fontFamily:'system-ui,sans-serif', fontSize:'21px', color:'#FAF4EA', fontStyle:'700' }).setOrigin(0,0.5).setDepth(51);
-    this.statLabel = this.add.text(W-12, 24, '', { fontFamily:'system-ui,sans-serif', fontSize:'13px', color:'#FAF4EA' }).setOrigin(1,0.5).setDepth(51);
-
-    // Hint shown as a floating pill in the open floor, where it's easy to read on mobile.
-    this.hintBg = this.add.graphics().setDepth(59);
-    this.hint = this.add.text(W/2, 405, '', {
-      fontFamily:'system-ui,sans-serif', fontSize:'16px', color:hex(COL.brown), fontStyle:'700',
-      align:'center', wordWrap:{ width: 300 }
-    }).setOrigin(0.5).setDepth(60);
-    this.refreshHud();
-  }
-
-  buildToolbar() {
-    this.add.rectangle(W/2, 72, W, 48, COL.cream).setDepth(50);
-    // Stations are built on their slots and tables are tapped to buy; the toolbar hires helpers.
-    this.buttons = [
-      { id:'pet', x:W/2, y:72, w:220, h:38 },
-    ];
-    this.buttons.forEach(b => {
-      b.rect = this.add.rectangle(b.x, b.y, b.w, b.h, COL.btn).setStrokeStyle(2, COL.brown).setDepth(51);
-      b.txt  = this.add.text(b.x, b.y, '', { fontFamily:'system-ui,sans-serif', fontSize:'15px', color:'#FFFFFF', fontStyle:'700' }).setOrigin(0.5).setDepth(52);
-    });
-    this.refreshToolbar();
-  }
-
+  // ---------------- HUD / hint ----------------
   refreshHud() {
-    this.coinLabel.setText('💰 ' + this.coins + (this.broke ? '  ⚠️' : ''));
-    const wage = this.workers.length * WAGE_PER_SEC;
-    const wageStr = (this.tutPhase === 'done' && this.workers.length > 0)
-      ? '  💸-' + (Number.isInteger(wage) ? wage : wage.toFixed(1)) + '/s' : '';
-    this.statLabel.setText('Served ' + this.served + '  Lost ' + this.lost +
-      '  🐾' + this.workers.length + ' 🪑' + this.builtTables() + wageStr);
-    this.refreshBuildPads();
+    this.coinLabel.setText('💰 ' + Math.floor(G.coins));
+    this.statLabel.setText('Served ' + this.stall.served + '   🐾' + workersAt(this.id).length);
   }
 
-  canHireNow()    { return (this.tutPhase === 'setup' && this.currentSetupStep() === 1) || this.tutPhase === 'h-hire' || this.tutPhase === 'done'; }
-  canManageStaff(){ return (this.tutPhase === 'setup' && this.currentSetupStep() === 2) || this.storeOpen; }
-
-  refreshToolbar() {
-    if (!this.buttons) return;
-    this.buttons.forEach(b => {
-      const label = 'Hire 🐾 ' + COST.pet + ' 💰';
-      const usable = this.canHireNow() && this.coins >= COST.pet;
-      b.txt.setText(label);
-      b.rect.setFillStyle(usable ? COL.btn : COL.btnOff);
-    });
+  buildHintPill() {
+    this.hintBg = this.add.graphics().setDepth(70);
+    this.hintTxt = this.add.text(W/2, 116, '', { fontFamily:FONT, fontSize:'13px', color:hex(COL.brown), fontStyle:'700', align:'center', wordWrap:{ width: 320 } }).setOrigin(0.5).setDepth(71);
   }
 
   setHint(msg) {
-    this.hint.setText(msg || '');
+    this.hintTxt.setText(msg || '');
     this.hintBg.clear();
     if (msg) {
-      const w = this.hint.width + 26, h = this.hint.height + 16;
-      this.hintBg.fillStyle(COL.card, 0.94).fillRoundedRect(W/2-w/2, 405-h/2, w, h, 12);
-      this.hintBg.lineStyle(2, COL.dim, 1).strokeRoundedRect(W/2-w/2, 405-h/2, w, h, 12);
+      const w = this.hintTxt.width + 24, h = this.hintTxt.height + 14;
+      this.hintBg.fillStyle(COL.card, 0.96).fillRoundedRect(W/2-w/2, 116-h/2, w, h, 11);
+      this.hintBg.lineStyle(2, COL.dim, 1).strokeRoundedRect(W/2-w/2, 116-h/2, w, h, 11);
     }
   }
 
-  // ---------------- Input ----------------
-  inBox(px, py, o, halfW, halfH) {
-    return px >= o.x-halfW && px <= o.x+halfW && py >= o.y-halfH && py <= o.y+halfH;
+  flashHint(msg, ms = 1500) {
+    this.setHint(msg);
+    this.time.delayedCall(ms, () => { if (this.hintTxt.text === msg) this.updateStandingHint(); });
   }
 
-  handleTap(px, py) {
-    // grand-opening send-off: any tap dismisses it and starts real play
-    if (this.grandOpening) { this.closeGrandOpening(); return; }
-    // an open overlay (confirm dialog, worker picker, or station menu) swallows all taps
-    if (this.confirm) { this.confirmTap(px, py); return; }
-    if (this.picker)  { this.pickerTap(px, py); return; }
-    if (this.menu)    { this.menuTap(px, py); return; }
-    // OPEN THE STORE button (shown once setup is complete)
-    if (this.openBtn && this.openBtn.rect.visible && this.inBox(px, py, this.openBtn, this.openBtn.w/2, this.openBtn.h/2)) {
-      if (this.tutPhase === 'grand-ready') this.grandOpen(); else this.openStore();
-      return;
-    }
-    // toolbar (hire / table) buttons
-    for (const b of this.buttons) {
-      if (this.inBox(px, py, b, b.w/2, b.h/2)) { this.onButton(b); return; }
-    }
-    // pantry chips: tap to restock that ingredient
-    for (const ch of this.pantryActive) {
-      if (this.inBox(px, py, ch, ch.halfW, ch.halfH)) { this.openRestockConfirm(ch.ing); return; }
-    }
-    // a station slot: empty -> build its locked-in stall; built -> manage workers / menu
-    for (const s of this.slots) {
-      if (!this.inBox(px, py, s, 50, 70)) continue;
-      if (!s.station) { this.tryBuildSlot(this.slots.indexOf(s)); return; }
-      const st = s.station;
-      // tap a worker slot dot -> staff/swap that slot
-      if (this.canManageStaff()) {
-        for (const sl of this.activeSlots(st)) {
-          if (Math.abs(px - sl.sx) <= 17 && Math.abs(py - sl.sy) <= 17) { this.openWorkerPicker(st, sl); return; }
-        }
+  // The standing instruction shown when nothing transient is up.
+  updateStandingHint() {
+    if (!G.firstCookDone)            this.setHint('👆 Tap ' + this.recipe.steps[0].emoji + ' ' + this.recipe.steps[0].label + ' to make a ' + this.cfg.emoji + ' by hand');
+    else if (isAutomated(this.id))   this.setHint('🤖 This stall runs itself — head back to the market and work another!');
+    else if (workersAt(this.id).length === 0 && G.coins >= HIRE_COST && this.recipe.steps.some((_, k) => isLearned(this.id, k)))
+                                     this.setHint('Hire a helper 🐾 — they take over every step you\'ve learned');
+    else                             this.setHint('Keep cooking — each tap trains that step toward 🤖 auto');
+  }
+
+  refreshAll() {
+    this.refreshHud();
+    this.refreshPantryChip();
+    this.refreshTray();
+    this.refreshHelper();
+    this.refreshToken();
+    this.stepBtns.forEach((_, i) => this.refreshStepBtn(i));
+    this.updateStandingHint();
+  }
+
+  // ---------------- Cooking logic ----------------
+  isAuto(k) { return isLearned(this.id, k) && workersAt(this.id).length > 0; }
+
+  startStep(k, manual) {
+    if (k === 0 && !this.dish.consumed) {                 // a fresh dish draws one ingredient
+      if (G.pantry[this.cfg.ingredient] <= 0) {
+        if (manual) this.flashHint('Out of ' + INGREDIENTS[this.cfg.ingredient].emoji + ' — tap the chip to restock');
+        return false;
       }
-      // tutorial 'move them over' step: any boba-stall tap assigns the helper
-      if (this.tutPhase === 'b-move') { const e = this.firstEmptySlot(st); if (e) { this.openWorkerPicker(st, e); return; } }
-      // tap the stall body (upper area) -> Station Menu (upgrades + stats), in free play
-      if (this.inFreePlay() && py <= st.y) { this.openStationMenu(st); return; }
-      // during setup, a station tap that isn't this step's action -> remind the player
-      if (this.tutPhase === 'setup') { this.flashHint(this.setupHint()); return; }
-      return;
+      G.pantry[this.cfg.ingredient] -= 1;
+      this.dish.consumed = true;
+      this.refreshPantryChip();
     }
-    // tap a table spot: available (on its turn) -> buy; otherwise explain
-    for (const s of this.waitSpots) {
-      if (!this.inBox(px, py, { x:s.x, y:TABLE_Y }, 30, 30)) continue;
-      if (s.state === 'available') {
-        if (this.tableBuyable()) this.tryBuyTable(s);
-        else this.flashHint(this.setupHint());   // not the table's turn yet
-        return;
-      }
-      if (s.state === 'locked') { this.flashHint('🪑 More tables coming in a future update!'); return; }
-      return; // a built table — nothing to do for now
+    this.dish.performing = true;
+    this.dish.prog = 0;
+    this.dish.manual = manual;
+    return true;
+  }
+
+  completeStep(k) {
+    this.dish.performing = false;
+    this.dish.prog = 0;
+    if (this.dish.manual) {                               // only hand-work trains a step
+      this.stall.train[k] = Math.min(1, this.stall.train[k] + TRAIN_PER_TAP);
+      if (!G.firstCookDone) { G.firstCookDone = true; this.updateStandingHint(); }
     }
+    this.dish.step = k + 1;
+    this.stepBtns.forEach((_, i) => this.refreshStepBtn(i));   // re-highlight the new current step
+    this.refreshToken();
+    this.refreshHelper();
   }
 
-  onButton(b) {
-    // only the Hire button is on the toolbar now
-    if (!this.canHireNow()) { const m = this.tutHint(); if (m) this.flashHint(m); return; }
-    this.hirePet();
+  depositDish() {
+    if (this.tray.length >= TRAY_MAX) return;             // tray full — finished dish waits
+    this.tray.push(true);
+    // fly a copy of the token down to the next open tray plate
+    const plate = this.trayPlates[this.tray.length - 1];
+    const fly = this.add.text(this.token.x, TOKEN_Y, this.cfg.emoji, { fontSize:'24px' }).setOrigin(0.5).setDepth(30);
+    this.tweens.add({ targets: fly, x: plate.x, y: TRAY_Y, duration: 280, ease:'Quad.Out', onComplete: () => { fly.destroy(); this.refreshTray(); } });
+    // reset the line for the next dish
+    this.dish.step = 0; this.dish.performing = false; this.dish.prog = 0; this.dish.consumed = false;
+    this.stepBtns.forEach((_, i) => this.refreshStepBtn(i));
+    this.refreshToken();
   }
 
-  tryBuyTable(s) {
-    if (this.coins < TABLE_COST) { this.flashHint('Need ' + TABLE_COST + ' 💰'); return; }
-    this.coins -= TABLE_COST;
-    s.state = 'built';
-    this.refreshTables();
-    this.refreshHud(); this.refreshToolbar();
-    if (this.tutPhase !== 'setup') this.flashHint('Table built! 🪑');   // in setup the bubble advances instead
-    this.checkSetup();
-    this.refreshQuests();
-    if (this.tutPhase === 'h-tables') {
-      if (this.builtTables() >= 3) this.grandOpeningReady();   // last goal met → show the GRAND OPENING button
-      else this.updateTutorialTip();                           // re-point the hint at the next open table
+  // Drive the assembly line each frame: auto-perform learned steps, advance manual ones.
+  tickLine(delta) {
+    const steps = this.recipe.steps;
+    if (this.dish.step >= steps.length) { this.depositDish(); return; }
+    const k = this.dish.step;
+    if (this.dish.performing) {
+      this.dish.prog += delta / steps[k].ms;
+      if (this.dish.prog >= 1) this.completeStep(k);
+    } else if (this.isAuto(k)) {
+      this.startStep(k, false);                           // helper handles a learned step hands-free
     }
+    this.drawStepProgress();
   }
 
-  // ---------------- Building / staffing ----------------
-  tryBuildSlot(i) {
-    const slot = this.slots[i], type = slot.type;
-    if (this.isLocked(type)) { this.flashHint(ORDERS[type].emoji + ' coming in a future update!'); return; }
-    if (!this.canBuildPhase(type)) {
-      this.flashHint(this.tutHint() || 'Locked for now'); return;
-    }
-    if (this.coins < COST[type]) { this.flashHint('Need ' + COST[type] + ' 💰'); return; }
-    this.coins -= COST[type];
-    const st = this.placeStation(i, type);
-    if (this.tutPhase === 'setup')        this.checkSetup();          // may auto-staff and unlock OPEN
-    else if (this.tutPhase === 'b-build') this.startBobaMoveStep(st); // built, now prompt to move helper
-    // in normal play a new stall starts empty — tap it to assign a worker
-    this.refreshHud(); this.refreshToolbar();
-  }
-
-  placeStation(slotIndex, type) {
-    const slot = this.slots[slotIndex];
-    const accent = ACCENT[type];
-    const cont = this.add.container(slot.x, slot.y).setDepth(10);
-
-    // --- Stall: a labeled sign showing the product it makes ---
-    cont.add(this.add.rectangle(0, -34, 96, 60, COL.card).setStrokeStyle(3, accent));
-    cont.add(this.add.rectangle(0, -58, 96, 14, accent));                 // sign strip
-    cont.add(this.add.text(0, -34, ORDERS[type].emoji, { fontSize:'34px' }).setOrigin(0.5));
-
-    // --- Menu button (gear) at the top-right corner: opens upgrades + stats ---
-    cont.add(this.add.circle(40, -58, 11, COL.card).setStrokeStyle(2, accent));
-    cont.add(this.add.text(40, -58, '⚙', { fontSize:'13px' }).setOrigin(0.5));
-
-    // --- Status line summarizing the whole station ---
-    const status = this.add.text(0, 58, '', { fontFamily:'system-ui,sans-serif', fontSize:'11px', color:hex(accent), fontStyle:'700' }).setOrigin(0.5);
-    cont.add(status);
-
-    const st = { type, slotIndex, x:slot.x, y:slot.y, accent, cont, status,
-                 slots: [], shelfSlots: [], shelf:0, shelfMax:1,
-                 up:{ cap:1, speed:0, price:0, eff:0 }, stats:{ served:0, revenue:0 } };
-
-    // --- Pickup shelf: pre-made dishes line up on the serving counter below the stall ---
-    for (let k = 0; k < MAX_SHELF; k++) {
-      const plate = this.add.circle(0, 103, 9, COL.btnOff).setStrokeStyle(2, accent);
-      const dish  = this.add.text(0, 103, '', { fontSize:'14px' }).setOrigin(0.5);
-      cont.add(plate); cont.add(dish);
-      st.shelfSlots.push({ plate, dish });
-    }
-
-    // --- Worker slots: created up to MAX_SLOTS, shown up to current capacity ---
-    for (let k = 0; k < MAX_SLOTS; k++) {
-      const sc   = this.add.container(0, 0);
-      const dot  = this.add.circle(0, 0, 13, COL.btnOff).setStrokeStyle(2, accent);
-      const face = this.add.text(0, 0, '', { fontSize:'15px' }).setOrigin(0.5);
-      const bub  = this.add.text(14, -9, '', { fontSize:'11px' }).setOrigin(0.5);  // dish being made
-      const bar  = this.add.graphics();
-      sc.add([dot, face, bub, bar]);
-      cont.add(sc);
-      st.slots.push({ idx:k, cont:sc, dot, face, bubble:bub, bar, accent, pet:null, busy:false, workTween:null, sx:0, sy:0 });
-    }
-
-    slot.station = st;
-    this.stations.push(st);
-    if (slot.pad) slot.pad.cont.setVisible(false);
-    this.layoutSlots(st);
-    this.layoutShelf(st);
-    this.refreshStationStatus(st);
-    this.refreshPantry();    // this stall's ingredient now matters
-    return st;
-  }
-
-  // --- Station helpers ---
-  activeSlots(st)    { return st.slots.slice(0, st.up.cap); }
-  firstEmptySlot(st) { return this.activeSlots(st).find(sl => !sl.pet) || null; }
-  cookMsFor(st)      { return ORDERS[st.type].cookMs * Math.pow(0.82, st.up.speed); }
-  valueFor(st)       { return ORDERS[st.type].value + 3 * st.up.price; }
-  effFree(st)        { return Math.random() < 0.2 * st.up.eff; }   // chance a dish uses no ingredient
-  stationName(type)  { return { dumpling:'Dumpling', boba:'Boba', noodle:'Noodle' }[type] || type; }
-
-  upgradeLevel(st, key) { return key === 'cap' ? st.up.cap - 1 : key === 'shelf' ? st.shelfMax - 1 : st.up[key]; }
-  upgradeMaxed(st, key) { return key === 'cap' ? st.up.cap >= MAX_SLOTS : key === 'shelf' ? st.shelfMax >= MAX_SHELF : st.up[key] >= UPGRADE_MAX; }
-  upgradeCost(st, key)  { return Math.round(UPGRADES[key].base * Math.pow(UPGRADE_GROW, this.upgradeLevel(st, key))); }
-
-  // Position the active worker slots in a row beneath the stall; hide the rest.
-  layoutSlots(st) {
-    const xs = ({ 1:[0], 2:[-20, 20], 3:[-31, 0, 31] })[st.up.cap] || [0];
-    st.slots.forEach((sl, i) => {
-      const active = i < st.up.cap;
-      sl.cont.setVisible(active);
-      if (active) {
-        const lx = xs[i], ly = 26;
-        sl.cont.setPosition(lx, ly);
-        sl.sx = st.x + lx; sl.sy = st.y + ly;
-      }
-    });
-  }
-
-  // Position the visible pickup-shelf plates in a row along the serving counter.
-  layoutShelf(st) {
-    const xs = ({ 1:[0], 2:[-18, 18], 3:[-28, 0, 28] })[st.shelfMax] || [0];
-    st.shelfSlots.forEach((ss, i) => {
-      const active = i < st.shelfMax;
-      ss.plate.setVisible(active);
-      ss.dish.setVisible(active);
-      if (active) { ss.plate.setX(xs[i]); ss.dish.setX(xs[i]); }
-    });
-    this.refreshShelf(st);
-  }
-
-  // Fill the first `st.shelf` plates with the dish; leave the rest as faint empties.
-  refreshShelf(st) {
-    st.shelfSlots.forEach((ss, i) => {
-      if (i >= st.shelfMax) return;
-      const filled = i < st.shelf;
-      ss.dish.setText(filled ? ORDERS[st.type].emoji : '');
-      ss.plate.setAlpha(filled ? 1 : 0.35);
-    });
-  }
-
-  refreshSlot(slot) {
-    if (slot.pet) { slot.dot.setFillStyle(COL.tan);   slot.face.setText(slot.pet.emoji); }
-    else          { slot.dot.setFillStyle(COL.btnOff); slot.face.setText(''); slot.bubble.setText(''); }
-  }
-
-  drawSlotBar(slot, p) {
-    const bw = 26, bh = 4, bx = -bw/2, by = 15;
-    slot.bar.clear();
-    if (p > 0) {
-      slot.bar.fillStyle(COL.cream, 1).fillRoundedRect(bx, by, bw, bh, 2);
-      slot.bar.fillStyle(slot.accent, 1).fillRoundedRect(bx, by, bw*Phaser.Math.Clamp(p,0,1), bh, 2);
-    }
-  }
-
-  // One-line summary of the station's state shown under the slots.
-  refreshStationStatus(st) {
-    const slots = this.activeSlots(st);
-    const staffed = slots.filter(s => s.pet).length;
-    const cooking = slots.filter(s => s.busy).length;
-    const ing = RECIPE_ING[st.type];
-    let msg = 'Ready', col = st.accent;
-    if (staffed === 0)                                     { msg = 'needs 🐾'; col = COL.dim; }
-    else if (cooking > 0)                                  { msg = cooking + (cooking > 1 ? ' cooking' : ' cooking'); }
-    else if (this.broke)                                   { msg = 'unpaid 💢'; col = COL.red; }
-    else if ((this.pantry[ing] || 0) <= 0)                 { msg = 'out ' + INGREDIENTS[ing].emoji; col = COL.red; }
-    st.status.setText(msg).setColor(hex(col));
-  }
-
-  hirePet() {
-    if (this.coins < COST.pet) { this.flashHint('Need ' + COST.pet + ' 💰'); return; }
-    this.coins -= COST.pet;
-    const w = this.addWorker();                        // joins the idle pool
-    if (this.tutPhase === 'setup') {                   // next step (assign) is guided by the anchored bubble
-      this.checkSetup();
-      this.refreshHud(); this.refreshToolbar();
-      return;
-    }
-    if (this.tutPhase === 'h-hire') {                  // 2nd helper hired — the Grand Opening quest begins
-      this.setPhase('h-assign');
-      this.unlockTables([1, 3]);                       // tables 2 & 4 (the middle is table 3) open for purchase
-      this.refreshHud(); this.refreshToolbar();
-      this.flashHint('Hired ' + w.emoji + '! Now staff both stations 🐾');
-      return;
-    }
-    this.refreshHud(); this.refreshToolbar();
-    this.flashHint('Hired ' + w.emoji + '! Tap a stall to place them');
-  }
-
-  // ---------------- Worker picker (one station slot at a time) ----------------
-  openWorkerPicker(station, slot) {
-    this.closePicker(); this.closeMenu();
-    const cur = slot.pet;
-    const idle      = this.freeWorkers();
-    const elsewhere = this.workers.filter(w => w !== cur && w.slot && w.slot !== slot);
-    const opts = [
-      ...idle.map(w => ({ w, label: 'idle helper' })),
-      ...elsewhere.map(w => ({ w, label: 'move from ' + ORDERS[w.station.type].emoji })),
-    ];
-    if (cur) opts.push({ clear: true, label: '⛔ Clear slot (' + cur.emoji + ' → idle)' });
-    if (idle.length > 0 && this.tutPhase === 'done') opts.push({ dismiss: true, label: '👋 Send an idle helper home' });
-    if (opts.length === 0) {
-      this.flashHint('No helpers yet — hire one (🐾 ' + COST.pet + ' 💰)');
-      return;
-    }
-    const rowH = 46, headH = 44, padB = 14, panelW = 300, halfW = (panelW - 24) / 2;
-    const panelH = headH + opts.length * rowH + padB;
-    const cx = W / 2, top = Phaser.Math.Clamp(430 - panelH / 2, 110, H - panelH - 20);
-
-    const cont = this.add.container(0, 0).setDepth(90);
-    cont.add(this.add.rectangle(W/2, H/2, W, H, 0x2A211B, 0.5));               // backdrop
-    const panel = this.add.graphics();
-    panel.fillStyle(COL.card, 1).fillRoundedRect(cx - panelW/2, top, panelW, panelH, 16);
-    panel.lineStyle(3, station.accent, 1).strokeRoundedRect(cx - panelW/2, top, panelW, panelH, 16);
-    cont.add(panel);
-    cont.add(this.add.text(cx, top + headH/2 + 2, 'Staff this ' + ORDERS[station.type].emoji + ' slot',
-      { fontFamily:'system-ui,sans-serif', fontSize:'15px', color:hex(COL.brown), fontStyle:'700' }).setOrigin(0.5));
-
-    const rows = [];
-    opts.forEach((o, i) => {
-      const ry = top + headH + rowH*i + rowH/2;
-      const action = o.dismiss || o.clear;
-      cont.add(this.add.rectangle(cx, ry, panelW - 24, rowH - 8, action ? COL.tan : COL.cream).setStrokeStyle(2, COL.dim));
-      cont.add(this.add.text(cx - halfW + 12, ry, action ? o.label : (o.w.emoji + '   ' + o.label),
-        { fontFamily:'system-ui,sans-serif', fontSize:'15px', color:hex(COL.brown), fontStyle:'700' }).setOrigin(0, 0.5));
-      rows.push({ opt: o, ry, halfH: (rowH - 8) / 2 });
-    });
-    this.picker = { cont, station, slot, rows, cx, halfW };
-  }
-
-  pickerTap(px, py) {
-    const pk = this.picker;
-    for (const r of pk.rows) {
-      if (Math.abs(px - pk.cx) <= pk.halfW && Math.abs(py - r.ry) <= r.halfH) {
-        if (r.opt.clear)        { this.closePicker(); this.clearSlot(pk.slot); }
-        else if (r.opt.dismiss) { this.closePicker(); this.dismissIdleWorker(); }
-        else                    this.chooseWorker(pk.station, pk.slot, r.opt.w);
-        return;
-      }
-    }
-    this.closePicker();   // tapped the backdrop / outside the rows
-  }
-
-  chooseWorker(station, slot, w) {
-    this.assignToSlot(w, station, slot);
-    this.closePicker();
-    if (this.tutPhase === 'b-move' && this.bobaStation && this.activeSlots(this.bobaStation).some(s => s.pet)) this.finishBobaStep();
-    else if (this.tutPhase === 'h-assign') {                 // both stations staffed → move to the tables goal
-      if (this.bothStationsStaffed()) this.startTableStep();
-      else { this.refreshQuests(); this.updateTutorialTip(); }
-    }
-    else if (this.tutPhase === 'setup') this.checkSetup();   // assigning advances the setup sequence
-  }
-
-  dismissIdleWorker() {
-    const w = this.freeWorkers()[0];
-    if (!w) { this.flashHint('No idle helper to send home'); return; }
-    this.workers = this.workers.filter(x => x !== w);
-    this.refreshHud(); this.refreshToolbar();
-    this.flashHint('Sent ' + w.emoji + ' home — payroll is lighter');
-  }
-
-  closePicker() {
-    if (!this.picker) return;
-    this.picker.cont.destroy();
-    this.picker = null;
-  }
-
-  // ---------------- Station Menu (upgrades + stats) ----------------
-  openStationMenu(st) {
-    this.closePicker(); this.closeMenu();
-    const keys = ['cap', 'shelf', 'speed', 'price', 'eff'];
-    const headH = 60, rowH = 50, padB = 16, panelW = 320, halfW = (panelW - 24) / 2;
-    const panelH = headH + keys.length*rowH + padB + 18;
-    const cx = W / 2, top = Phaser.Math.Clamp(420 - panelH / 2, 100, H - panelH - 20);
-
-    const cont = this.add.container(0, 0).setDepth(90);
-    cont.add(this.add.rectangle(W/2, H/2, W, H, 0x2A211B, 0.5));
-    const panel = this.add.graphics();
-    panel.fillStyle(COL.card, 1).fillRoundedRect(cx - panelW/2, top, panelW, panelH, 16);
-    panel.lineStyle(3, st.accent, 1).strokeRoundedRect(cx - panelW/2, top, panelW, panelH, 16);
-    cont.add(panel);
-    cont.add(this.add.text(cx, top + 20, ORDERS[st.type].emoji + '  ' + this.stationName(st.type) + ' Stall',
-      { fontFamily:'system-ui,sans-serif', fontSize:'16px', color:hex(COL.brown), fontStyle:'700' }).setOrigin(0.5));
-    cont.add(this.add.text(cx, top + 42, 'Served ' + st.stats.served + '   ·   Earned ' + st.stats.revenue + ' 💰',
-      { fontFamily:'system-ui,sans-serif', fontSize:'12px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5));
-
-    const rows = [];
-    keys.forEach((key, i) => {
-      const u = UPGRADES[key];
-      const ry = top + headH + rowH*i + rowH/2;
-      const maxed = this.upgradeMaxed(st, key);
-      const cost  = this.upgradeCost(st, key);
-      const lvl   = (key === 'cap') ? st.up.cap : (key === 'shelf') ? st.shelfMax : st.up[key];
-      const cap   = (key === 'cap') ? MAX_SLOTS : (key === 'shelf') ? MAX_SHELF : UPGRADE_MAX;
-      const afford = !maxed && this.coins >= cost && this.inFreePlay();
-      const bg = maxed ? COL.cream : (afford ? COL.btn : COL.btnOff);
-      cont.add(this.add.rectangle(cx, ry, panelW - 24, rowH - 8, bg).setStrokeStyle(2, COL.dim));
-      const labelCol = afford ? '#FFFFFF' : hex(COL.brown);
-      cont.add(this.add.text(cx - halfW + 12, ry - 9, u.emoji + ' ' + u.label + '  (Lv ' + lvl + '/' + cap + ')',
-        { fontFamily:'system-ui,sans-serif', fontSize:'14px', color:labelCol, fontStyle:'700' }).setOrigin(0, 0.5));
-      cont.add(this.add.text(cx - halfW + 12, ry + 10, u.effect,
-        { fontFamily:'system-ui,sans-serif', fontSize:'10px', color: afford ? '#F3E7D3' : hex(COL.dim) }).setOrigin(0, 0.5));
-      cont.add(this.add.text(cx + halfW - 12, ry, maxed ? 'MAX' : (cost + ' 💰'),
-        { fontFamily:'system-ui,sans-serif', fontSize:'13px', color:labelCol, fontStyle:'700' }).setOrigin(1, 0.5));
-      rows.push({ key, ry, halfH: (rowH - 8) / 2 });
-    });
-    cont.add(this.add.text(cx, top + panelH - 12, 'tap outside to close',
-      { fontFamily:'system-ui,sans-serif', fontSize:'10px', color:hex(COL.dim) }).setOrigin(0.5));
-    this.menu = { st, cont, rows, cx, halfW };
-  }
-
-  menuTap(px, py) {
-    const m = this.menu;
-    for (const r of m.rows) {
-      if (Math.abs(px - m.cx) <= m.halfW && Math.abs(py - r.ry) <= r.halfH) { this.buyUpgrade(m.st, r.key); return; }
-    }
-    this.closeMenu();
-  }
-
-  buyUpgrade(st, key) {
-    if (this.upgradeMaxed(st, key)) { this.flashHint(UPGRADES[key].label + ' is maxed'); return; }
-    if (!this.inFreePlay()) return;
-    const cost = this.upgradeCost(st, key);
-    if (this.coins < cost) { this.flashHint('Need ' + cost + ' 💰'); return; }
-    this.coins -= cost;
-    if (key === 'cap') { st.up.cap += 1; this.layoutSlots(st); }
-    else if (key === 'shelf') { st.shelfMax += 1; this.layoutShelf(st); }
-    else { st.up[key] += 1; }
-    this.refreshHud(); this.refreshToolbar();
-    this.closeMenu(); this.openStationMenu(st);   // reopen to show new levels/costs
-    this.flashHint(UPGRADES[key].emoji + ' ' + UPGRADES[key].label + ' upgraded!');
-  }
-
-  closeMenu() {
-    if (!this.menu) return;
-    this.menu.cont.destroy();
-    this.menu = null;
-  }
-
-  // ---------------- Customers: a visible queue feeds the tables ----------------
-  buildQueue() {
-    this.queue = [];     // upcoming customers waiting in line (each {type, cont})
-    this.genCount = 0;   // how many customers have been generated into the queue
-    this.queueLabel = this.add.text(QUEUE_X, QUEUE_Y0 - 34, 'next in line ↑', { fontFamily:'system-ui,sans-serif', fontSize:'11px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5).setDepth(18).setVisible(false);
-  }
-
-  // Generate one upcoming customer (with its order) at the back of the line.
-  queueCustomer() {
-    this.genCount += 1;
-    const type = this.scriptedType(this.genCount) || Phaser.Utils.Array.GetRandom(ORDERABLE_TYPES);
-    const cont = this.add.container(QUEUE_X, QUEUE_Y0 + QUEUE_LEN*QUEUE_DY).setDepth(18).setAlpha(0);
-    cont.add(this.add.circle(0, 0, 16, COL.card).setStrokeStyle(2, COL.dim));
-    cont.add(this.add.text(0, 0, '🙂', { fontSize:'17px' }).setOrigin(0.5));
-    cont.add(this.add.text(0, -23, ORDERS[type].emoji, { fontSize:'15px' }).setOrigin(0.5));
-    this.tweens.add({ targets: cont, alpha: 1, duration: 250 });
-    this.queue.push({ type, cont });
-  }
-
-  ensureQueue() {
-    if (!this.storeOpen) return;
-    while (this.queue.length < QUEUE_LEN) this.queueCustomer();
-    this.layoutQueue();
+  // ---------------- Customers ----------------
+  spawnCustomer() {
+    if (this.customers.length >= QUEUE_MAX) return;
+    const idx = this.customers.length;
+    const cont = this.add.container(DOOR.x, DOOR.y).setDepth(20);
+    cont.add(this.add.circle(0, 0, 22, COL.card).setStrokeStyle(3, COL.dim));
+    cont.add(this.add.text(0, 0, '🙂', { fontSize:'22px' }).setOrigin(0.5));
+    cont.add(this.add.circle(0, -42, 16, COL.cream).setStrokeStyle(2, COL.dim));
+    const bubble = this.add.text(0, -42, this.cfg.emoji, { fontSize:'18px' }).setOrigin(0.5);
+    const patBar = this.add.graphics();
+    cont.add([bubble, patBar]);
+    const cu = { cont, bubble, patBar, patience: PATIENCE_MS, state:'walking' };
+    this.customers.push(cu);
+    this.tweens.add({ targets: cont, x: QUEUE_X(), y: QUEUE_Y[idx], duration: 700, ease:'Sine.InOut', onComplete: () => { if (cu.state === 'walking') cu.state = 'waiting'; } });
   }
 
   layoutQueue() {
-    this.queueLabel.setVisible(this.queue.length > 0);
-    this.queue.forEach((q, i) => this.tweens.add({ targets: q.cont, x: QUEUE_X, y: QUEUE_Y0 + i*QUEUE_DY, duration: 250, ease:'Sine.Out' }));
-  }
-
-  trySpawn() {
-    if (!this.storeOpen || this.grandOpening) return;
-    this.ensureQueue();   // keep the preview line full
-    // hold seating during gated tutorial steps (after the first customer is in)
-    if ((this.tutPhase === 'd-supply' || this.tutPhase === 'b-build' || this.tutPhase === 'b-move') && this.spawnCount > 0) return;
-    const spot = this.waitSpots.find(s => s.state === 'built' && !s.taken);
-    if (!spot || this.queue.length === 0) return;
-    this.seatNext(spot);
-    this.ensureQueue();
-  }
-
-  // The front of the line walks in and takes the free table.
-  seatNext(spot) {
-    const q = this.queue.shift();
-    const fromX = q.cont.x, fromY = q.cont.y;
-    q.cont.destroy();
-    this.spawnCount += 1;
-    if (this.tutPhase === 'd-run' && this.spawnCount === 4) this.setPhase('b-build');   // first boba → build step
-    this.seatCustomer(q.type, spot, fromX, fromY);
-  }
-
-  seatCustomer(type, spot, fromX, fromY) {
-    const cont = this.add.container(fromX, fromY).setDepth(20);
-    cont.add(this.add.circle(0, 0, 27, COL.card).setStrokeStyle(3, COL.dim));
-    cont.add(this.add.text(0, 0, '🙂', { fontSize:'27px' }).setOrigin(0.5));
-    cont.add(this.add.circle(0, -60, 20, COL.cream).setStrokeStyle(2, COL.dim));   // order bubble rests on the table above
-    const bubble = this.add.text(0, -60, '…', { fontSize:'23px' }).setOrigin(0.5);
-    cont.add(bubble);
-    const patBar = this.add.graphics(); cont.add(patBar);
-
-    const cu = { type, state:'entering', patience:PATIENCE_MS, claimed:false, spot, cont, bubble, patBar };
-    spot.taken = cu;
-    this.customers.push(cu);
-
-    this.tweens.add({
-      targets: cont, x: spot.x, y: spot.y, duration: WALK_MS, ease:'Sine.InOut',
-      onComplete: () => {
-        if (cu.state !== 'entering') return;
-        cu.state = 'waiting';
-        cu.bubble.setText(ORDERS[type].emoji);
-        this.drawPatience(cu);
-      }
+    this.customers.forEach((cu, i) => {
+      if (cu.state === 'leaving') return;
+      this.tweens.add({ targets: cu.cont, x: QUEUE_X(), y: QUEUE_Y[Math.min(i, QUEUE_Y.length-1)], duration: 250, ease:'Sine.Out' });
     });
   }
 
   drawPatience(cu) {
-    const bw = 50, bh = 8, bx = -bw/2, by = -38;   // tucked just under the order bubble (above the guest's head)
+    const bw = 42, bh = 6, bx = -bw/2, by = -24;
     const p = cu.patience / PATIENCE_MS;
     let c = COL.green; if (p < 0.5) c = COL.tan; if (p < 0.25) c = COL.red;
     cu.patBar.clear();
@@ -1326,177 +638,94 @@ class Cafe extends Phaser.Scene {
     cu.patBar.fillStyle(c, 1).fillRoundedRect(bx, by, bw*Phaser.Math.Clamp(p,0,1), bh, 3);
   }
 
-  removeCustomer(cu) {
-    const i = this.customers.indexOf(cu);
-    if (i >= 0) this.customers.splice(i, 1);
-    if (cu.spot) cu.spot.taken = null;
-  }
-
-  leaveCustomer(cu, happy) {
+  serveFront() {
+    const cu = this.customers.find(c => c.state === 'waiting');
+    if (!cu) return;
+    this.tray.pop(); this.refreshTray();
     cu.state = 'leaving';
     cu.patBar.clear();
-    this.removeCustomer(cu);
-    this.tweens.add({
-      targets: cu.cont, x: DOOR.x, y: DOOR.y + 40, alpha: 0, duration: 900, ease:'Sine.In',
-      onComplete: () => cu.cont.destroy()
-    });
-    this.trySpawn();   // a seat just opened — bring the next in line
+    cu.bubble.setText('💛');
+    const val = this.recipe.value;
+    // a dish flies from the tray to the guest, then pays out
+    const src = this.trayPlates[this.tray.length] || this.trayPlates[0];
+    const fly = this.add.text(src.x, TRAY_Y, this.cfg.emoji, { fontSize:'20px' }).setOrigin(0.5).setDepth(35);
+    this.tweens.add({ targets: fly, x: cu.cont.x, y: cu.cont.y, duration: 260, ease:'Quad.Out', onComplete: () => {
+      fly.destroy();
+      G.coins += val; this.stall.served += 1; this.stall.revenue += val;
+      this.floatText(cu.cont.x, cu.cont.y - 30, '+' + val + ' 💰', COL.green);
+      this.refreshHud();
+    }});
+    this.tweens.add({ targets: cu.cont, x: DOOR.x, y: DOOR.y + 40, alpha: 0, duration: 800, delay: 120, ease:'Sine.In', onComplete: () => {
+      cu.cont.destroy();
+      this.customers = this.customers.filter(c => c !== cu);
+      this.layoutQueue();
+    }});
   }
 
-  // ---------------- Cooking onto the shelf + serving from it ----------------
-  // A worker cooks a dish onto the station's pickup shelf (no customer needed —
-  // this is pre-cooking during downtime). Consumes an ingredient like before.
-  cookToShelf(st, sl) {
-    const ing = RECIPE_ING[st.type];
-    if (this.pantry[ing] > 0 && !this.effFree(st)) {   // efficiency may skip consumption; grace cooks the last 0 free
-      this.pantry[ing] -= 1;
-      this.refreshPantry();
-      if (this.pantry[ing] === 0 && !this.lowSeen[ing] && this.tutPhase === 'done') {
-        this.lowSeen[ing] = true;
-        this.flashHint('Out of ' + INGREDIENTS[ing].emoji + '! Tap the pantry to restock.');
-      }
-    }
-    sl.busy = true;
-    sl.bubble.setText(ORDERS[st.type].emoji);          // this worker is making this dish
-    sl.workTween = this.tweens.add({ targets: sl.face, y: -3, duration: 300, yoyo:true, repeat:-1, ease:'Sine.InOut' });
-    const prog = { v: 0 };
-    this.tweens.add({
-      targets: prog, v: 1, duration: this.cookMsFor(st), ease:'Linear',
-      onUpdate: () => this.drawSlotBar(sl, prog.v),
-      onComplete: () => this.finishCook(st, sl),
-    });
-  }
-
-  // A cook completes: the worker frees up and a dish lands on the shelf.
-  finishCook(st, sl) {
-    sl.busy = false;
-    this.drawSlotBar(sl, 0);
-    if (sl.workTween) { sl.workTween.stop(); sl.workTween = null; sl.face.y = 0; }
-    sl.bubble.setText('');
-    st.shelf = Math.min(st.shelfMax, st.shelf + 1);
-    this.refreshShelf(st);
-    this.refreshStationStatus(st);
-  }
-
-  // Hand a waiting customer a dish straight off the shelf — instant, no worker needed.
-  serveFromShelf(st, cu) {
-    cu.claimed = true; cu.bubble.setText('⏳'); cu.patBar.clear();
-    this.deliverDish(st, cu);
-  }
-
-  // Fly a dish from the station to the customer, then collect payment.
-  deliverDish(st, cu) {
-    const value = this.valueFor(st);
-    const alive = cu.state === 'waiting' && cu.cont.active;
-    const dish = this.add.text(st.x, st.y + 103, ORDERS[st.type].emoji, { fontSize:'22px' }).setOrigin(0.5).setDepth(40);
-    const tx = alive ? cu.cont.x : st.x, ty = alive ? cu.cont.y - 4 : st.y;
-    const dist = Phaser.Math.Distance.Between(st.x, st.y, tx, ty);
-    this.tweens.add({
-      targets: dish, x: tx, y: ty, duration: 250 + dist*0.7, ease:'Quad.Out',
-      onComplete: () => {
-        dish.destroy();
-        if (!alive) return;
-        this.coins += value;
-        this.served += 1;
-        st.stats.served += 1; st.stats.revenue += value;
-        this.floatText(cu.cont.x, cu.cont.y - 40, '+' + value + ' 💰', COL.green);
-        cu.bubble.setText('💛');
-        this.leaveCustomer(cu, true);
-        this.refreshHud(); this.refreshToolbar(); this.refreshQuests();
-        this.maybeAdviseHire();
-      }
-    });
-  }
-
-  // ---------------- feedback ----------------
-  floatText(x, y, str, color) {
-    const t = this.add.text(x, y, str, { fontFamily:'system-ui,sans-serif', fontSize:'20px', color:hex(color), fontStyle:'700' }).setOrigin(0.5).setDepth(45);
-    this.tweens.add({ targets:t, y:y-46, alpha:0, duration:800, ease:'Quad.Out', onComplete:()=>t.destroy() });
-  }
-
-  flashHint(msg, ms = 1300) {
-    this.setHint(msg);
-    this.time.delayedCall(ms, () => { if (this.hint.text === msg) this.setHint(this.stepHint || ''); });
-  }
-
-  // ---------------- main loop ----------------
-  update(time, delta) {
-    this.payWages(delta);
-    this.runStations();
-    this.tickPatience(delta);
-    this.drawHighlights(time);
-  }
-
-  // Continuous wage drain (only once the tutorial is fully done). Coins never go
-  // negative; if payroll can't be met you go "broke" and staff idle (see runStations).
-  payWages(delta) {
-    if (this.grandOpening || this.tutPhase !== 'done' || this.workers.length === 0) return;
-    const before = this.coins;
-    this.wageBucket += this.workers.length * WAGE_PER_SEC * (delta / 1000);
-    while (this.wageBucket >= 1) {
-      if (this.coins <= 0) { this.wageBucket = 0; break; }   // can't pay — forgive the rest, go broke
-      this.coins -= 1; this.wageBucket -= 1;
-    }
-    if (this.coins <= 0) this.broke = true;
-    else if (this.coins >= BROKE_RECOVER) this.broke = false;   // hysteresis so we don't flicker
-    if (this.coins !== before) { this.refreshHud(); this.refreshToolbar(); }
-  }
-
-  // While broke, one "grace" worker slot keeps cooking (even with no stock) so you can
-  // recover. Prefer a slot whose stall has a customer waiting, so income can always restart.
-  graceSlot() {
-    let fallback = null;
-    for (const st of this.stations) {
-      for (const sl of this.activeSlots(st)) {
-        if (!sl.pet) continue;
-        if (!fallback) fallback = sl;
-        if (this.customers.some(c => c.state === 'waiting' && !c.claimed && c.type === st.type)) return sl;
-      }
-    }
-    return fallback;
-  }
-
-  // Each tick: first hand shelf dishes to waiting customers (instant, even if the
-  // station is unstaffed), then let idle staffed slots pre-cook to refill the shelf.
-  // Respects ingredient stock and the broke/unpaid state. Slots cook in parallel.
-  runStations() {
-    const grace = this.broke ? this.graceSlot() : null;
-    for (const st of this.stations) {
-      // 1) Serve from the shelf while we have stock and a matching waiting guest.
-      while (st.shelf > 0) {
-        const cu = this.customers.find(c => c.state === 'waiting' && !c.claimed && c.type === st.type);
-        if (!cu) break;
-        st.shelf -= 1;
-        this.refreshShelf(st);
-        this.serveFromShelf(st, cu);
-      }
-      // 2) Pre-cook to keep the shelf topped up (counting in-progress cooks).
-      const ing = RECIPE_ING[st.type];
-      for (const sl of this.activeSlots(st)) {
-        if (!sl.pet || sl.busy) continue;
-        const isGrace = (sl === grace);
-        if (this.broke && !isGrace) continue;                       // unpaid → idle
-        if ((this.pantry[ing] || 0) <= 0 && !isGrace) continue;     // out of stock
-        const cooking = this.activeSlots(st).filter(s => s.busy).length;
-        if (st.shelf + cooking >= st.shelfMax) break;               // shelf full (or will be)
-        this.cookToShelf(st, sl);
-      }
-      this.refreshStationStatus(st);
-    }
-  }
-
-  tickPatience(delta) {
-    // Freeze patience during gated steps and during the grand-opening send-off.
-    if (this.grandOpening || this.tutPhase === 'd-supply' || this.tutPhase === 'b-build' || this.tutPhase === 'b-move') return;
-    // copy guards against splice-during-iteration in leaveCustomer
+  tickCustomers(delta) {
+    this.spawnAcc += delta;
+    if (this.spawnAcc >= SPAWN_MS) { this.spawnAcc = 0; this.spawnCustomer(); }
+    // serve as many fronts as we have tray dishes
+    while (this.tray.length > 0 && this.customers.some(c => c.state === 'waiting')) this.serveFront();
     for (const cu of [...this.customers]) {
-      if (cu.state !== 'waiting' || cu.claimed) continue;
+      if (cu.state !== 'waiting') continue;
       cu.patience -= delta;
-      if (cu.patience <= 0) { cu.bubble.setText('💨'); this.lost += 1; this.leaveCustomer(cu, false); this.refreshHud(); }
-      else this.drawPatience(cu);
+      if (cu.patience <= 0) {
+        cu.state = 'leaving'; cu.bubble.setText('💨'); cu.patBar.clear();
+        this.tweens.add({ targets: cu.cont, x: DOOR.x, y: DOOR.y + 40, alpha: 0, duration: 700, ease:'Sine.In', onComplete: () => {
+          cu.cont.destroy(); this.customers = this.customers.filter(c => c !== cu); this.layoutQueue();
+        }});
+      } else this.drawPatience(cu);
     }
+  }
+
+  floatText(x, y, str, color) {
+    const t = this.add.text(x, y, str, { fontFamily:FONT, fontSize:'19px', color:hex(color), fontStyle:'700' }).setOrigin(0.5).setDepth(45);
+    this.tweens.add({ targets:t, y:y-42, alpha:0, duration:800, ease:'Quad.Out', onComplete:()=>t.destroy() });
+  }
+
+  // ---------------- Input ----------------
+  handleTap(px, py) {
+    if (hitBtn(px, py, this.backBtn)) { this.scene.start('market'); return; }
+    if (inBox(px, py, this.pantryChip, this.pantryChip.w/2, this.pantryChip.h/2)) { this.doRestock(); return; }
+    if (this.hireBtn.rect.visible && hitBtn(px, py, this.hireBtn)) { this.doHire(); return; }
+    // a prep step: only the CURRENT, manual step responds to a tap
+    for (const b of this.stepBtns) {
+      if (!inBox(px, py, b, b.bw/2, b.bh/2)) continue;
+      if (this.dish.step !== b.i) { this.flashHint('Make the steps in order 👉'); return; }
+      if (this.isAuto(b.i)) { this.flashHint('🤖 ' + this.recipe.steps[b.i].label + ' is automated — let your helper'); return; }
+      if (this.dish.performing) return;
+      this.startStep(b.i, true);
+      return;
+    }
+  }
+
+  doRestock() {
+    if (G.coins < RESTOCK_COST) { this.flashHint('Need ' + RESTOCK_COST + ' 💰 to restock'); return; }
+    G.coins -= RESTOCK_COST;
+    G.pantry[this.cfg.ingredient] += RESTOCK_AMOUNT;
+    this.refreshHud(); this.refreshPantryChip();
+    this.flashHint('Restocked ' + INGREDIENTS[this.cfg.ingredient].emoji + ' +' + RESTOCK_AMOUNT);
+  }
+
+  doHire() {
+    if (G.coins < HIRE_COST) { this.flashHint('Need ' + HIRE_COST + ' 💰 to hire'); return; }
+    G.coins -= HIRE_COST;
+    const emoji = WORKER_EMOJIS[G.workers.length % WORKER_EMOJIS.length];
+    G.workers.push({ id: ++G.workerSeq, emoji, stallId: this.id });
+    this.refreshHud(); this.refreshHelper(); this.stepBtns.forEach((_, i) => this.refreshStepBtn(i));
+    this.flashHint('Hired ' + emoji + '! They\'ll run every step you\'ve learned');
+  }
+
+  update(time, delta) {
+    tickWages(delta);
+    tickPassive(delta, this.id);     // other automated stalls keep earning while you're here
+    this.tickLine(delta);
+    this.tickCustomers(delta);
+    this.refreshHud();
   }
 }
+function QUEUE_X() { return W/2; }
 
 new Phaser.Game({
   type: Phaser.AUTO,
@@ -1504,7 +733,7 @@ new Phaser.Game({
   width: W, height: H,
   backgroundColor: hex(COL.cream),
   scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
-  scene: [Cafe],
+  scene: [Market, Stall],
 });
 </script>
 </body>
