@@ -210,6 +210,7 @@ class Market extends Phaser.Scene {
     this.hintPill = this.makeHintPill();
     this.input.on('pointerdown', p => this.handleTap(p.x, p.y));
     this.refreshHud();
+    this.refreshCards();
   }
 
   drawBackground() {
@@ -237,45 +238,47 @@ class Market extends Phaser.Scene {
 
   buildCard(id, y, h) {
     const cfg = STALLS[id], cx = W/2, cardW = 334, left = cx - cardW/2;
-    const g = this.add.graphics().setDepth(4);
-    const open = cfg.state === 'open';
-    g.fillStyle(COL.card, open ? 1 : 0.85).fillRoundedRect(left, y, cardW, h, 18);
-    g.lineStyle(3, cfg.accent, open ? 1 : 0.5).strokeRoundedRect(left, y, cardW, h, 18);
-
-    this.add.text(left + 46, y + 52, cfg.emoji, { fontSize:'46px' }).setOrigin(0.5).setDepth(5).setAlpha(open ? 1 : 0.5);
+    const bg = this.add.graphics().setDepth(4);
+    const emoji = this.add.text(left + 46, y + 52, cfg.emoji, { fontSize:'46px' }).setOrigin(0.5).setDepth(5);
     this.add.text(left + 84, y + 30, cfg.name, { fontFamily:FONT, fontSize:'19px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0,0.5).setDepth(5);
-
     const status = this.add.text(left + 84, y + 58, '', { fontFamily:FONT, fontSize:'12px', color:hex(COL.dim), fontStyle:'700', lineSpacing:3, wordWrap:{ width: cardW - 100 } }).setOrigin(0,0).setDepth(5);
-
-    // Right-hand action: ENTER for open stalls; a price/lock otherwise.
-    let btn = null;
-    if (open) {
-      btn = makeButton(this, cx, y + h - 30, cardW - 28, 42, COL.btn, 'ENTER  →', '17px', 6);
-    } else if (cfg.state === 'locked') {
-      this.add.text(cx, y + h - 30, '🔒  Opens soon  ·  ' + cfg.cost + ' 💰', { fontFamily:FONT, fontSize:'14px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5).setDepth(6);
-    } else {
-      this.add.text(cx, y + h - 30, '🔒  Coming soon', { fontFamily:FONT, fontSize:'14px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5).setDepth(6);
-    }
-    return { id, cfg, status, btn };
+    // One action button per card; its label/fill/visibility track the stall's state.
+    const btn = makeButton(this, cx, y + h - 30, cardW - 28, 42, COL.btn, '', '16px', 6);
+    return { id, cfg, y, h, left, cardW, bg, emoji, status, btn };
   }
 
   refreshCards() {
     for (const c of this.cards) {
-      if (c.cfg.state !== 'open') continue;
-      const s = G.stalls[c.id], ing = c.cfg.ingredient, r = recipeOf(c.id);
-      const learned = r.steps.filter(sid => isLearned(c.id, sid)).length;
-      let txt;
-      if (isAutomated(c.id)) {
-        const rate = (r.value / (cycleMs(c.id) / 1000));
-        txt = (G.pantry[ing] > 0)
-          ? '🤖 Running on its own  ·  +' + rate.toFixed(1) + '/s\nServed ' + s.served + '   ·   ' + INGREDIENTS[ing].emoji + ' ' + G.pantry[ing] + ' left'
-          : '⚠️ Out of ' + INGREDIENTS[ing].emoji + ' — step in to restock\nServed ' + s.served;
-      } else if (workersAt(c.id).length > 0) {
-        txt = '👋 Helper waiting — train every step (' + learned + '/' + r.steps.length + ')\nServed ' + s.served;
-      } else {
-        txt = (s.served > 0 ? 'Served ' + s.served + '  ·  ' : '') + 'Tap to cook by hand 👆\nLearn the steps, then hire a helper';
+      const cfg = c.cfg, open = cfg.state === 'open';
+      c.bg.clear();
+      c.bg.fillStyle(COL.card, open ? 1 : 0.9).fillRoundedRect(c.left, c.y, c.cardW, c.h, 18);
+      c.bg.lineStyle(3, cfg.accent, open ? 1 : 0.5).strokeRoundedRect(c.left, c.y, c.cardW, c.h, 18);
+      c.emoji.setAlpha(open ? 1 : 0.5);
+
+      if (open) {
+        const s = G.stalls[c.id], ing = cfg.ingredient, r = recipeOf(c.id);
+        const learned = r.steps.filter(sid => isLearned(c.id, sid)).length;
+        let txt;
+        if (isAutomated(c.id)) {
+          const rate = (r.value / (cycleMs(c.id) / 1000));
+          txt = (G.pantry[ing] > 0)
+            ? '🤖 Running on its own  ·  +' + rate.toFixed(1) + '/s\nServed ' + s.served + '   ·   ' + INGREDIENTS[ing].emoji + ' ' + G.pantry[ing] + ' left'
+            : '⚠️ Out of ' + INGREDIENTS[ing].emoji + ' — step in to restock\nServed ' + s.served;
+        } else if (workersAt(c.id).length > 0) {
+          txt = '👋 Helper waiting — train every step (' + learned + '/' + r.steps.length + ')\nServed ' + s.served;
+        } else {
+          txt = (s.served > 0 ? 'Served ' + s.served + '  ·  ' : '') + 'Tap to cook by hand 👆\nLearn the steps, then hire a helper';
+        }
+        c.status.setText(txt);
+        c.btn.txt.setText('ENTER  →'); c.btn.rect.setFillStyle(COL.btn).setVisible(true); c.btn.txt.setVisible(true);
+      } else if (cfg.state === 'locked') {
+        c.status.setText('A new stall to open up.\nIts own recipe to learn and automate.');
+        const afford = G.coins >= cfg.cost;
+        c.btn.txt.setText('🔓 Open  ·  ' + cfg.cost + ' 💰'); c.btn.rect.setFillStyle(afford ? COL.amber : COL.btnOff).setVisible(true); c.btn.txt.setVisible(true);
+      } else {   // soon
+        c.status.setText('Coming in a future update.');
+        c.btn.rect.setVisible(false); c.btn.txt.setVisible(false);
       }
-      c.status.setText(txt);
     }
   }
 
@@ -286,21 +289,34 @@ class Market extends Phaser.Scene {
   }
 
   handleTap(px, py) {
+    // action buttons first (ENTER / Open)
     for (const c of this.cards) {
-      if (c.cfg.state === 'open' && c.btn && hitBtn(px, py, c.btn)) { this.scene.start('stall', { id: c.id }); return; }
-      // tapping the card body of an open stall also enters
+      if (!c.btn.rect.visible || !hitBtn(px, py, c.btn)) continue;
+      if (c.cfg.state === 'open') this.scene.start('stall', { id: c.id });
+      else if (c.cfg.state === 'locked') this.tryOpenStall(c);
+      return;
     }
-    // body taps: open → enter, locked/soon → explain
+    // card-body taps: open → enter, locked/soon → explain
     const top = 150, cardH = 184, gap = 16;
     STALL_ORDER.forEach((id, i) => {
       const y = top + i*(cardH+gap);
       if (py >= y && py <= y + cardH) {
         const cfg = STALLS[id];
         if (cfg.state === 'open') this.scene.start('stall', { id });
-        else if (cfg.state === 'locked') this.hintPill.show('🧋 The boba stall opens in the next update!');
+        else if (cfg.state === 'locked') this.hintPill.show('Tap “Open” to start the ' + cfg.name + ' for ' + cfg.cost + ' 💰');
         else this.hintPill.show('🍜 Noodles are coming soon!');
       }
     });
+  }
+
+  // Open a locked stall for coins, then step straight inside to start cooking.
+  tryOpenStall(c) {
+    const cfg = c.cfg;
+    if (G.coins < cfg.cost) { this.hintPill.show('Need ' + cfg.cost + ' 💰 to open the ' + cfg.name); return; }
+    G.coins -= cfg.cost;
+    cfg.state = 'open';                 // mutates STALLS[id].state — persists for the session
+    this.refreshHud(); this.refreshCards();
+    this.scene.start('stall', { id: c.id });
   }
 
   update(time, delta) {
