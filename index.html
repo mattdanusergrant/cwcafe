@@ -440,16 +440,22 @@ class Cafe extends Phaser.Scene {
   showTip(text, x, y, dir) {
     const txt = this.tipTxt; txt.setText(text);
     const w = txt.width + 22, h = txt.height + 12, bg = this.tipBg;
+    const M = 8;   // keep the bubble at least this far from the screen edges
+    // Clamp the box on-screen, then point the tail back at the real anchor (x,y).
+    const cx = Phaser.Math.Clamp(x, M + w/2, W - M - w/2);
+    const cy = Phaser.Math.Clamp(y, M + h/2, H - M - h/2);
+    const tx = Phaser.Math.Clamp(x - cx, -w/2 + 12, w/2 - 12);   // tail offset along the box (up/down)
+    const ty = Phaser.Math.Clamp(y - cy, -h/2 + 10, h/2 - 10);   // tail offset along the box (left)
     bg.clear();
     bg.fillStyle(COL.card, 0.97).fillRoundedRect(-w/2, -h/2, w, h, 10);
-    if (dir === 'up')   bg.fillStyle(COL.card, 0.97).fillTriangle(-8, -h/2 + 2, 8, -h/2 + 2, 0, -h/2 - 9);
-    if (dir === 'down') bg.fillStyle(COL.card, 0.97).fillTriangle(-8,  h/2 - 2, 8,  h/2 - 2, 0,  h/2 + 9);
-    if (dir === 'left') bg.fillStyle(COL.card, 0.97).fillTriangle(-w/2 + 2, -7, -w/2 + 2, 7, -w/2 - 9, 0);
+    if (dir === 'up')   bg.fillStyle(COL.card, 0.97).fillTriangle(tx-8, -h/2 + 2, tx+8, -h/2 + 2, tx, -h/2 - 9);
+    if (dir === 'down') bg.fillStyle(COL.card, 0.97).fillTriangle(tx-8,  h/2 - 2, tx+8,  h/2 - 2, tx,  h/2 + 9);
+    if (dir === 'left') bg.fillStyle(COL.card, 0.97).fillTriangle(-w/2 + 2, ty-7, -w/2 + 2, ty+7, -w/2 - 9, ty);
     bg.lineStyle(2, COL.brown, 1).strokeRoundedRect(-w/2, -h/2, w, h, 10);
-    if (dir === 'up')   { bg.lineBetween(-8, -h/2, 0, -h/2 - 9); bg.lineBetween(8, -h/2, 0, -h/2 - 9); }
-    if (dir === 'down') { bg.lineBetween(-8,  h/2, 0,  h/2 + 9); bg.lineBetween(8,  h/2, 0,  h/2 + 9); }
-    if (dir === 'left') { bg.lineBetween(-w/2, -7, -w/2 - 9, 0); bg.lineBetween(-w/2, 7, -w/2 - 9, 0); }
-    this.tip.setPosition(x, y).setVisible(true);
+    if (dir === 'up')   { bg.lineBetween(tx-8, -h/2, tx, -h/2 - 9); bg.lineBetween(tx+8, -h/2, tx, -h/2 - 9); }
+    if (dir === 'down') { bg.lineBetween(tx-8,  h/2, tx,  h/2 + 9); bg.lineBetween(tx+8,  h/2, tx,  h/2 + 9); }
+    if (dir === 'left') { bg.lineBetween(-w/2, ty-7, -w/2 - 9, ty); bg.lineBetween(-w/2, ty+7, -w/2 - 9, ty); }
+    this.tip.setPosition(cx, cy).setVisible(true);
   }
   hideTip() { if (this.tip) this.tip.setVisible(false); }
 
