@@ -107,10 +107,10 @@ const RESTOCK_COST   = 20;    // coins per restock (below the per-dish margin)
 const HIRE_COST      = 130;   // coins to hire + assign a helper (reachable soon after training)
 const WAGE_PER_SEC   = 0.4;   // coins each helper costs per second
 const TRAIN_PER_TAP  = 0.2;   // training a step gains this per manual completion (5 reps to learn)
-const TRAY_MAX       = 4;     // finished dishes a stall's pickup tray can hold
+const TRAY_MAX       = 6;     // finished dishes a stall's pickup tray can hold (buffer for hand-cooking)
 const QUEUE_MAX      = 4;     // customers that line up at a stall
 const PATIENCE_MS    = 14000;
-const SPAWN_MS       = 3000;
+const SPAWN_MS       = 1500;  // customers arrive briskly, so pitching in by hand sells more & earns faster
 const WORKER_EMOJIS  = ['🐱', '🐶', '🐰', '🐻', '🦊', '🐼', '🐯', '🐸'];
 
 /* ============================================================================
@@ -686,7 +686,7 @@ class Stall extends Phaser.Scene {
     if (!G.firstCookDone)            this.setHint('👆 Tap ' + first.emoji + ' ' + first.label + ' to make a ' + this.recipe.emoji + ' by hand');
     else if (isAutomated(this.id) && panBuyable && G.coins >= u.cost)
                                      this.setHint('Now buy the ' + u.equip + ' to unlock ' + RECIPES[u.recipe].name + ' ' + RECIPES[u.recipe].emoji + ' — worth more!');
-    else if (isAutomated(this.id))   this.setHint('🤖 This stall runs itself — tap ← Market to work another!');
+    else if (isAutomated(this.id))   this.setHint('🤖 Runs itself! Tap along to cook faster & earn more, or ← Market for another stall');
     else if (learned >= total && !hasHelper)
                                      this.setHint(G.coins >= HIRE_COST ? 'Every step learned! Hire a helper 🐾 to run it for you'
                                                                        : 'Every step learned! Earn ' + HIRE_COST + ' 💰, then hire a helper 🐾');
@@ -864,13 +864,13 @@ class Stall extends Phaser.Scene {
       }
       return;
     }
-    // a prep step: only the CURRENT, manual step responds to a tap
+    // a prep step: tap the CURRENT step to work it. You can always pitch in —
+    // even on an automated line — to cook faster than the helper alone.
     for (const b of this.stepBtns) {
       if (!inBox(px, py, b, b.bw/2, b.bh/2)) continue;
       if (this.dish.step !== b.i) { this.flashHint('Make the steps in order 👉'); return; }
-      if (this.isAuto(b.i)) { this.flashHint('🤖 ' + STEPS[b.sid].label + ' is automated — let your helper'); return; }
-      if (this.dish.performing) return;
-      this.startStep(b.i, true);
+      if (this.dish.performing) this.completeStep(b.i);   // rush the step in progress (helps even when automated)
+      else this.startStep(b.i, true);
       return;
     }
   }
@@ -907,7 +907,7 @@ class Stall extends Phaser.Scene {
     const now = isAutomated(this.id);
     if (now && !this.wasAutomated) {
       this.floatText(W/2, PREP_Y + 70, '🎉 It runs itself!', COL.green);
-      this.flashHint('🎉 Fully automated! Tap ← Market to go run another stall', 2800);
+      this.flashHint('🎉 Automated! Tap along to earn even faster, or ← Market for another stall', 2800);
       this.guideBackUntil = time + 5000;
       G.taughtAutomate = true;       // teaching highlights stop nagging from here on
     }
