@@ -131,10 +131,10 @@ class Cafe extends Phaser.Scene {
     //  d-run       customers #1-3 (dumpling) stream in and get served
     //  b-build     customer #4 (boba) waits, build the 🧋 stall
     //  b-move      boba stall built; move your one helper over to make boba
-    //  h-earn      "Grand Opening" quest begins; tables 2 & 4 unlock; save toward a 2nd helper
+    //  h-earn      "Hire a 2nd helper" quest: save toward a 2nd helper
     //  h-hire      saved enough — advised to hire a second helper
-    //  h-assign    2nd helper hired; assign them to a stall
-    //  h-tables    both helpers working; buy 2 more tables (the last goal)
+    //  h-assign    "Grand Opening" quest begins; tables 2 & 4 unlock; staff both stations
+    //  h-tables    both stations staffed; reach 3 tables total
     //  grand-ready all goals met; press the big GRAND OPENING button to celebrate
     //  done        normal play (tutorial complete)
     this.tutPhase = 'setup';
@@ -247,8 +247,8 @@ class Cafe extends Phaser.Scene {
       'b-move'    :'Move your helper to the 🧋 stall',
       'h-earn'    :'Keep serving to save up ' + COST.pet + ' 💰',
       'h-hire'    :'Hire your new helper first 🐾',
-      'h-assign'  :'Assign your 2nd helper to a stall 🐾',
-      'h-tables'  :'Buy 2 more tables for your grand opening 🪑',
+      'h-assign'  :'Put a helper on each station 🐾',
+      'h-tables'  :'Get to 3 tables for your grand opening 🪑',
       'grand-ready':'Press GRAND OPENING to cut the ribbon! 🎉',
     }[this.tutPhase] || '';
   }
@@ -261,6 +261,8 @@ class Cafe extends Phaser.Scene {
     this.refreshTables();
   }
   dumplingStaffed() { const st = this.getStation('dumpling'); return !!(st && this.activeSlots(st).some(sl => sl.pet)); }
+  // Every built station has at least one helper (the Grand Opening "both stations" goal).
+  bothStationsStaffed() { return this.stations.length >= 2 && this.stations.every(st => this.activeSlots(st).some(sl => sl.pet)); }
 
   // The current setup step (0..4); each step's action is enabled only on its turn.
   currentSetupStep() {
@@ -314,11 +316,9 @@ class Cafe extends Phaser.Scene {
     this.setPhase('b-move');   // the anchored bubble prompts moving the helper
   }
 
-  // Phase E: boba helper assigned — the "Grand Opening" quest begins. Open tables
-  // 2 & 4 for purchase now (a quest goal), then save toward hiring a 2nd helper.
+  // Phase E: boba helper assigned — start the standalone "Hire a 2nd helper" quest.
   finishBobaStep() {
     this.setPhase('h-earn');
-    this.unlockTables([1, 3]);   // tables 2 & 4 (the middle is table 3) open for purchase
   }
 
   // Triggered when the player first saves up enough to hire: nudge them to do it.
@@ -327,8 +327,8 @@ class Cafe extends Phaser.Scene {
     this.setPhase('h-hire');   // the anchored bubble + button pulse prompt the 2nd hire
   }
 
-  // 2nd helper placed — advance to the final "buy 2 more tables" goal. If the player
-  // already bought them earlier in the quest, the big button is ready right away.
+  // Both stations staffed — advance to the "3 tables total" goal. If the player
+  // already has 3 tables, the big GRAND OPENING button is ready right away.
   startTableStep() {
     this.setPhase('h-tables');
     if (this.builtTables() >= 3) this.grandOpeningReady();   // tables already bought → ready to open
@@ -390,14 +390,17 @@ class Cafe extends Phaser.Scene {
         ]};
       case 'h-earn':
       case 'h-hire':
+        return { title:'🐾 Hire a 2nd helper', items:[
+          { t:'Save up ' + COST.pet + ' 💰', done:this.tutPhase !== 'h-earn' },
+          { t:'Hire your new helper 🐾', done:this.workers.length >= 2 },
+        ]};
       case 'h-assign':
       case 'h-tables':
       case 'grand-ready':
         return { title:'🎉 Grand Opening', items:[
-          { t:'Save up ' + COST.pet + ' 💰', done:this.tutPhase !== 'h-earn' },
-          { t:'Hire a 2nd helper 🐾', done:this.workers.length >= 2 },
-          { t:'Assign your 2nd helper 🐾', done:this.workers.filter(w => w.station).length >= 2 },
-          { t:'Buy 2 more tables 🪑', done:this.builtTables() >= 3 },
+          { t:'Have helpers at both stations 🐾', done:this.bothStationsStaffed() },
+          { t:'Have a total of 3 tables 🪑', done:this.builtTables() >= 3 },
+          { t:'Grand opening 🎉', done:false },
         ]};
       default:
         return null;   // done
@@ -520,22 +523,22 @@ class Cafe extends Phaser.Scene {
       this.showTip('Hire a helper! 🐾', 288, 116, 'up');
     } else if (ph === 'h-hire') {                             // hire the second helper
       this.showTip('Hire a 2nd helper! 🐾', 288, 116, 'up');
-    } else if (ph === 'h-assign') {                           // place the 2nd helper
+    } else if (ph === 'h-assign') {                           // staff the other station
       let slot = null;
       for (const st of this.stations) { const e = this.firstEmptySlot(st); if (e) { slot = e; break; } }
       if (slot) {
-        this.showTip('Assign your 2nd helper! 👆', slot.sx, slot.sy + 40, 'up');
+        this.showTip('Staff both stations! 👆', slot.sx, slot.sy + 40, 'up');
         this.tutHL = { kind:'circle', x:slot.sx, y:slot.sy, r:18 };
       } else {
-        this.showTip('Assign your 2nd helper to a stall 🐾', W/2, 300, 'down');
+        this.showTip('Put a helper on each station 🐾', W/2, 300, 'down');
       }
-    } else if (ph === 'h-tables') {                           // buy the last 2 tables to open
+    } else if (ph === 'h-tables') {                           // reach 3 tables total
       const t = this.waitSpots.find(s => s.state === 'available');
       if (t) {
-        this.showTip('Buy 2 more tables to open! 👆', t.x, TABLE_Y + 32, 'up');
+        this.showTip('Add tables — 3 in total! 👆', t.x, TABLE_Y + 32, 'up');
         this.tutHL = { kind:'rect', x:t.x, y:TABLE_Y, w:54, h:32 };
       } else {
-        this.showTip('Buy 2 more tables for your grand opening 🪑', W/2, 300, 'down');
+        this.showTip('Get to 3 tables for your grand opening 🪑', W/2, 300, 'down');
       }
     } else if (ph === 'setup' && step === 2 && dump) {        // assign the helper
       const slot = this.activeSlots(dump)[0];
@@ -1077,10 +1080,11 @@ class Cafe extends Phaser.Scene {
       this.refreshHud(); this.refreshToolbar();
       return;
     }
-    if (this.tutPhase === 'h-hire') {                  // 2nd helper hired — assigning them triggers the grand opening
+    if (this.tutPhase === 'h-hire') {                  // 2nd helper hired — the Grand Opening quest begins
       this.setPhase('h-assign');
+      this.unlockTables([1, 3]);                       // tables 2 & 4 (the middle is table 3) open for purchase
       this.refreshHud(); this.refreshToolbar();
-      this.flashHint('Hired ' + w.emoji + '! Assign them to a stall 🐾');
+      this.flashHint('Hired ' + w.emoji + '! Now staff both stations 🐾');
       return;
     }
     this.refreshHud(); this.refreshToolbar();
@@ -1145,7 +1149,10 @@ class Cafe extends Phaser.Scene {
     this.assignToSlot(w, station, slot);
     this.closePicker();
     if (this.tutPhase === 'b-move' && this.bobaStation && this.activeSlots(this.bobaStation).some(s => s.pet)) this.finishBobaStep();
-    else if (this.tutPhase === 'h-assign') this.startTableStep();   // 2nd helper placed → buy the last tables
+    else if (this.tutPhase === 'h-assign') {                 // both stations staffed → move to the tables goal
+      if (this.bothStationsStaffed()) this.startTableStep();
+      else { this.refreshQuests(); this.updateTutorialTip(); }
+    }
     else if (this.tutPhase === 'setup') this.checkSetup();   // assigning advances the setup sequence
   }
 
