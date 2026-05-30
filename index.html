@@ -130,9 +130,10 @@ class Cafe extends Phaser.Scene {
     //  d-run       customers #1-3 (dumpling) stream in and get served
     //  b-build     customer #4 (boba) waits, build the 🧋 stall
     //  b-move      boba stall built; move your one helper over to make boba
-    //  h-earn      serving up to a 50 💰 balance
+    //  h-earn      "Grand Opening" quest begins; tables 2 & 4 unlock; save toward a 2nd helper
     //  h-hire      saved enough — advised to hire a second helper
-    //  h-assign    2nd helper hired; assign them to a stall to trigger the grand opening
+    //  h-assign    2nd helper hired; assign them to a stall
+    //  h-tables    both helpers working; buy 2 more tables to trigger the grand opening
     //  done        normal play (tutorial complete)
     this.tutPhase = 'setup';
     this.storeOpen = false;       // becomes true once — the store never closes again
@@ -221,7 +222,8 @@ class Cafe extends Phaser.Scene {
       case 'done':
       case 'h-earn':
       case 'h-hire':
-      case 'h-assign': return true;            // free play
+      case 'h-assign':
+      case 'h-tables': return true;            // free play
       case 'setup':   return type === 'dumpling' && this.currentSetupStep() === 0;
       case 'b-build': return type === 'boba';
       default:        return false;           // open-ready, d-supply, d-run, b-move
@@ -229,7 +231,7 @@ class Cafe extends Phaser.Scene {
   }
 
   // tutorial phases that behave like normal play for building/managing helpers
-  inFreePlay() { return this.tutPhase === 'done' || this.tutPhase === 'h-earn' || this.tutPhase === 'h-hire' || this.tutPhase === 'h-assign'; }
+  inFreePlay() { return this.tutPhase === 'done' || this.tutPhase === 'h-earn' || this.tutPhase === 'h-hire' || this.tutPhase === 'h-assign' || this.tutPhase === 'h-tables'; }
 
   // hint shown when a gated control is tapped before its phase
   tutHint() {
@@ -243,6 +245,7 @@ class Cafe extends Phaser.Scene {
       'h-earn'    :'Keep serving to save up ' + COST.pet + ' 💰',
       'h-hire'    :'Hire your new helper first 🐾',
       'h-assign'  :'Assign your 2nd helper to a stall 🐾',
+      'h-tables'  :'Buy 2 more tables for your grand opening 🪑',
     }[this.tutPhase] || '';
   }
 
@@ -307,9 +310,11 @@ class Cafe extends Phaser.Scene {
     this.setPhase('b-move');   // the anchored bubble prompts moving the helper
   }
 
-  // Phase E: boba helper assigned — free play; now save toward hiring a 2nd helper.
+  // Phase E: boba helper assigned — the "Grand Opening" quest begins. Open tables
+  // 2 & 4 for purchase now (a quest goal), then save toward hiring a 2nd helper.
   finishBobaStep() {
     this.setPhase('h-earn');
+    this.unlockTables([1, 3]);   // tables 2 & 4 (the middle is table 3) open for purchase
   }
 
   // Triggered when the player first saves up enough to hire: nudge them to do it.
@@ -318,11 +323,17 @@ class Cafe extends Phaser.Scene {
     this.setPhase('h-hire');   // the anchored bubble + button pulse prompt the 2nd hire
   }
 
-  // The 2nd helper has been placed — throw the grand opening and finish the tutorial.
+  // 2nd helper placed — advance to the final "buy 2 more tables" goal. If the player
+  // already bought them earlier in the quest, celebrate immediately.
+  startTableStep() {
+    this.setPhase('h-tables');
+    if (this.builtTables() >= 3) this.grandOpen();   // tables already bought → open now
+  }
+
+  // All "Grand Opening" goals met — throw the celebration and finish the tutorial.
   grandOpen() {
     this.setPhase('done'); this.setStepHint('');
     this.coins += GRAND_OPENING_BONUS;
-    this.unlockTables([1, 3]);                       // tables 2 & 4 (the middle is table 3) open for purchase
     this.refreshHud(); this.refreshToolbar();
     this.showGrandOpening();                         // stays until the player taps to begin
   }
@@ -367,10 +378,12 @@ class Cafe extends Phaser.Scene {
       case 'h-earn':
       case 'h-hire':
       case 'h-assign':
-        return { title:'📋 Grow your team', items:[
+      case 'h-tables':
+        return { title:'🎉 Grand Opening', items:[
           { t:'Save up ' + COST.pet + ' 💰', done:this.tutPhase !== 'h-earn' },
-          { t:'Hire a 2nd helper 🐾', done:this.tutPhase === 'h-assign' },
-          { t:'Assign them to have your grand opening! 🎉', done:false },
+          { t:'Hire a 2nd helper 🐾', done:this.tutPhase === 'h-assign' || this.tutPhase === 'h-tables' },
+          { t:'Assign your 2nd helper 🐾', done:this.tutPhase === 'h-tables' },
+          { t:'Buy 2 more tables 🪑', done:this.builtTables() >= 3 },
         ]};
       default:
         return null;   // done
@@ -492,14 +505,22 @@ class Cafe extends Phaser.Scene {
       this.showTip('Hire a helper! 🐾', 288, 116, 'up');
     } else if (ph === 'h-hire') {                             // hire the second helper
       this.showTip('Hire a 2nd helper! 🐾', 288, 116, 'up');
-    } else if (ph === 'h-assign') {                           // place the 2nd helper to open
+    } else if (ph === 'h-assign') {                           // place the 2nd helper
       let slot = null;
       for (const st of this.stations) { const e = this.firstEmptySlot(st); if (e) { slot = e; break; } }
       if (slot) {
-        this.showTip('Assign them for your grand opening! 👆', slot.sx, slot.sy + 40, 'up');
+        this.showTip('Assign your 2nd helper! 👆', slot.sx, slot.sy + 40, 'up');
         this.tutHL = { kind:'circle', x:slot.sx, y:slot.sy, r:18 };
       } else {
         this.showTip('Assign your 2nd helper to a stall 🐾', W/2, 300, 'down');
+      }
+    } else if (ph === 'h-tables') {                           // buy the last 2 tables to open
+      const t = this.waitSpots.find(s => s.state === 'available');
+      if (t) {
+        this.showTip('Buy 2 more tables to open! 👇', t.x, t.y + 6, 'down');
+        this.tutHL = { kind:'rect', x:t.x, y:t.y + 38, w:54, h:32 };
+      } else {
+        this.showTip('Buy 2 more tables for your grand opening 🪑', W/2, 300, 'down');
       }
     } else if (ph === 'setup' && step === 2 && dump) {        // assign the helper
       const slot = this.activeSlots(dump)[0];
@@ -878,6 +899,11 @@ class Cafe extends Phaser.Scene {
     this.refreshHud(); this.refreshToolbar();
     if (this.tutPhase !== 'setup') this.flashHint('Table built! 🪑');   // in setup the bubble advances instead
     this.checkSetup();
+    this.refreshQuests();
+    if (this.tutPhase === 'h-tables') {
+      if (this.builtTables() >= 3) this.grandOpen();   // last Grand Opening goal met
+      else this.updateTutorialTip();                   // re-point the hint at the next open table
+    }
   }
 
   // ---------------- Building / staffing ----------------
@@ -1101,7 +1127,7 @@ class Cafe extends Phaser.Scene {
     this.assignToSlot(w, station, slot);
     this.closePicker();
     if (this.tutPhase === 'b-move' && this.bobaStation && this.activeSlots(this.bobaStation).some(s => s.pet)) this.finishBobaStep();
-    else if (this.tutPhase === 'h-assign') this.grandOpen();   // 2nd helper placed → grand opening
+    else if (this.tutPhase === 'h-assign') this.startTableStep();   // 2nd helper placed → buy the last tables
     else if (this.tutPhase === 'setup') this.checkSetup();   // assigning advances the setup sequence
   }
 
