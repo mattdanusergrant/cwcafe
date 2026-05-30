@@ -1297,8 +1297,8 @@ class Cafe extends Phaser.Scene {
     const cont = this.add.container(fromX, fromY).setDepth(20);
     cont.add(this.add.circle(0, 0, 27, COL.card).setStrokeStyle(3, COL.dim));
     cont.add(this.add.text(0, 0, '🙂', { fontSize:'27px' }).setOrigin(0.5));
-    cont.add(this.add.circle(0, -46, 20, COL.cream).setStrokeStyle(2, COL.dim));
-    const bubble = this.add.text(0, -46, '…', { fontSize:'23px' }).setOrigin(0.5);
+    cont.add(this.add.circle(0, -60, 20, COL.cream).setStrokeStyle(2, COL.dim));   // order bubble rests on the table above
+    const bubble = this.add.text(0, -60, '…', { fontSize:'23px' }).setOrigin(0.5);
     cont.add(bubble);
     const patBar = this.add.graphics(); cont.add(patBar);
 
@@ -1318,7 +1318,7 @@ class Cafe extends Phaser.Scene {
   }
 
   drawPatience(cu) {
-    const bw = 50, bh = 8, bx = -bw/2, by = -74;
+    const bw = 50, bh = 8, bx = -bw/2, by = -38;   // tucked just under the order bubble (above the guest's head)
     const p = cu.patience / PATIENCE_MS;
     let c = COL.green; if (p < 0.5) c = COL.tan; if (p < 0.25) c = COL.red;
     cu.patBar.clear();
