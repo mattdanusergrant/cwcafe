@@ -100,7 +100,7 @@ const STALLS = {
 const STALL_ORDER = ['dumpling', 'boba', 'noodle'];
 
 // ---- Economy / tuning ----
-const START_COINS    = 200;   // enough to cook, restock, and hire your first apprentice soon
+const START_COINS    = 60;    // a lean start — sell a few by hand (and clear quests) to afford your first hire
 const START_STOCK    = 22;    // a smooth first training run (~15 dishes) before the first restock
 const RESTOCK_AMOUNT = 20;    // units per restock
 const RESTOCK_COST   = 20;    // coins per restock (below the per-dish margin)
@@ -148,7 +148,33 @@ const G = {
   firstCookDone: false,        // clears the opening "tap to cook" nudge
   taughtAutomate: false,       // true once the player automates their first stall — stops the teaching highlights
   taughtPan: false,            // true once the pan-fried unlock has been pointed out
+  quest: 0,                    // index into QUESTS (the current tutorial goal)
+  stats: { handMade: 0 },      // dishes the player has finished by hand (for quests)
 };
+
+// Sequential tutorial quests — each pays out a coin reward, bootstrapping the
+// early game so you sell a few by hand, then fund your first hire and beyond.
+const QUESTS = [
+  { text:'Cook 3 dumplings by hand', reward:50, emoji:'🥟',
+    prog:()=>({ n:Math.min(G.stats.handMade,3), of:3 }), done:()=>G.stats.handMade >= 3 },
+  { text:'Hire your first apprentice', reward:60, emoji:'🐾',
+    done:()=>G.workerSeq > 0 },
+  { text:'Train an apprentice to mastery', reward:80, emoji:'🎓',
+    done:()=>STALL_ORDER.some(id => wReady(G.stalls[id].trainee, id) || autoLines(id) > 0) },
+  { text:'Put a helper on an auto-station', reward:120, emoji:'🤖',
+    done:()=>STALL_ORDER.some(id => autoLines(id) > 0) },
+  { text:'Open the boba stall', reward:150, emoji:'🧋',
+    done:()=>STALLS.boba.state === 'open' },
+];
+const currentQuest = () => G.quest < QUESTS.length ? QUESTS[G.quest] : null;
+// If the current quest is satisfied, pay its reward, advance, and return it (for a toast).
+function tryCompleteQuest() {
+  const q = currentQuest();
+  if (!q || !q.done()) return null;
+  G.coins += q.reward;
+  G.quest += 1;
+  return q;
+}
 
 const recipeOf  = id => RECIPES[G.stalls[id].active];          // the stall's *active* recipe
 const cycleMs   = id => recipeOf(id).steps.reduce((a, sid) => a + STEPS[sid].ms, 0);
@@ -214,8 +240,11 @@ class Market extends Phaser.Scene {
     this.drawBackground();
     this.buildHud();
 
-    this.add.text(W/2, 78, '🏮 CW Market', { fontFamily:FONT, fontSize:'26px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5).setDepth(5);
-    this.add.text(W/2, 104, 'Tap a stall to run it', { fontFamily:FONT, fontSize:'13px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5).setDepth(5);
+    this.add.text(W/2, 74, '🏮 CW Market', { fontFamily:FONT, fontSize:'26px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5).setDepth(5);
+
+    // Quest banner: the current tutorial goal + its coin reward.
+    this.qbBg = this.add.graphics().setDepth(4);
+    this.qbTxt = this.add.text(W/2, 110, '', { fontFamily:FONT, fontSize:'13px', color:hex(COL.brown), fontStyle:'800', align:'center' }).setOrigin(0.5).setDepth(5);
 
     // One card per stall, stacked down the screen.
     this.cards = [];
@@ -227,6 +256,18 @@ class Market extends Phaser.Scene {
     this.input.on('pointerdown', p => this.handleTap(p.x, p.y));
     this.refreshHud();
     this.refreshCards();
+    this.refreshQuestBanner();
+  }
+
+  refreshQuestBanner() {
+    const q = currentQuest();
+    this.qbBg.clear();
+    if (!q) { this.qbTxt.setText(''); return; }
+    const p = q.prog && q.prog();
+    this.qbTxt.setText('📋 ' + q.text + ' ' + q.emoji + (p ? '  (' + p.n + '/' + p.of + ')' : '') + '   ·   +' + q.reward + '💰');
+    const w = this.qbTxt.width + 26, h = 26;
+    this.qbBg.fillStyle(COL.card, 0.96).fillRoundedRect(W/2-w/2, 110-h/2, w, h, 10);
+    this.qbBg.lineStyle(2, COL.amber, 1).strokeRoundedRect(W/2-w/2, 110-h/2, w, h, 10);
   }
 
   // Pulse the dumpling ENTER button until the very first dish has been cooked.
@@ -349,8 +390,11 @@ class Market extends Phaser.Scene {
   update(time, delta) {
     tickWages(delta);
     tickPassive(delta, null);   // every automated stall earns while you're in the market
+    const q = tryCompleteQuest();
+    if (q) this.hintPill.show('✅ ' + q.text + '  ·  +' + q.reward + '💰');
     this.refreshHud();
     this.refreshCards();
+    this.refreshQuestBanner();
     this.drawHighlight(time);
   }
 }
@@ -717,8 +761,15 @@ class Stall extends Phaser.Scene {
     this.time.delayedCall(ms, () => { if (this.hintTxt.text === msg) this.updateStandingHint(); });
   }
 
-  // The standing instruction shown when nothing transient is up.
+  // The standing instruction shown when nothing transient is up. While a tutorial
+  // quest is active it doubles as the quest tracker (goal + reward).
   updateStandingHint() {
+    const q = currentQuest();
+    if (q) {
+      const p = q.prog && q.prog();
+      this.setHint('📋 ' + q.text + ' ' + q.emoji + (p ? ' (' + p.n + '/' + p.of + ')' : '') + '   ·   +' + q.reward + '💰');
+      return;
+    }
     const first = STEPS[this.recipe.steps[0]];
     const u = STALLS[this.id].unlock;
     const panBuyable = u && !this.stall.unlocked.includes(u.recipe);
@@ -798,6 +849,7 @@ class Stall extends Phaser.Scene {
 
   depositDish() {
     if (!this.addDishToTray(this.token.x, TOKEN_Y)) return;   // tray full — finished dish waits
+    G.stats.handMade += 1;                                    // counts toward the "cook by hand" quest
     this.dish.step = 0; this.dish.performing = false; this.dish.prog = 0; this.dish.consumed = false;
     this.stepBtns.forEach((_, i) => this.refreshStepBtn(i));
     this.refreshToken();
@@ -1003,8 +1055,17 @@ class Stall extends Phaser.Scene {
     this.tickLine(delta);            // player's manual line (trains the apprentice in the slot)
     this.tickAutoStations(delta);    // helpers' hands-free stations
     this.tickCustomers(delta);
+    this.checkQuest();
     this.checkAutomationMilestone(time);
     this.drawHighlight(time);
+    this.refreshHud();
+  }
+
+  checkQuest() {
+    const q = tryCompleteQuest();
+    if (!q) return;
+    this.floatText(W/2, 150, '✅ +' + q.reward + ' 💰', COL.green);
+    this.flashHint('✅ Quest done: ' + q.text + '  ·  +' + q.reward + '💰', 2600);
     this.refreshHud();
   }
 
