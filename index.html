@@ -332,7 +332,7 @@ class Cafe extends Phaser.Scene {
     this.questBg = this.add.graphics().setDepth(54);
     this.questTitle = this.add.text(W/2, 0, '', { fontFamily:'system-ui,sans-serif', fontSize:'15px', color:hex(COL.brown), fontStyle:'700' }).setOrigin(0.5).setDepth(55);
     this.questRows = [];
-    for (let i = 0; i < 5; i++) this.questRows.push(this.add.text(0, 0, '', { fontFamily:'system-ui,sans-serif', fontSize:'13px', fontStyle:'700' }).setOrigin(0, 0.5).setDepth(55).setVisible(false));
+    for (let i = 0; i < 5; i++) this.questRows.push(this.add.text(0, 0, '', { fontFamily:'system-ui,sans-serif', fontSize:'12px', fontStyle:'700' }).setOrigin(0, 0.5).setDepth(55).setVisible(false));
   }
 
   // The checklist for the current stage, or null once the tutorial is done.
@@ -370,7 +370,7 @@ class Cafe extends Phaser.Scene {
         return { title:'📋 Grow your team', items:[
           { t:'Save up ' + COST.pet + ' 💰', done:this.tutPhase !== 'h-earn' },
           { t:'Hire a 2nd helper 🐾', done:this.tutPhase === 'h-assign' },
-          { t:'Assign your 2nd helper to have your grand opening! 🎉', done:false },
+          { t:'Assign them to have your grand opening! 🎉', done:false },
         ]};
       default:
         return null;   // done
@@ -383,7 +383,7 @@ class Cafe extends Phaser.Scene {
     this.questBg.clear();
     this.questRows.forEach(r => r.setVisible(false));
     if (!q) { this.questTitle.setVisible(false); return; }
-    const cardW = 300, rowH = 25, headH = 30, top = 336, cx = W/2, left = cx - cardW/2;
+    const cardW = 330, rowH = 25, headH = 30, top = 336, cx = W/2, left = cx - cardW/2;
     const cardH = headH + q.items.length*rowH + 10;
     this.questBg.fillStyle(COL.card, 0.95).fillRoundedRect(left, top, cardW, cardH, 14);
     this.questBg.lineStyle(2, COL.brown, 1).strokeRoundedRect(left, top, cardW, cardH, 14);
