@@ -66,10 +66,12 @@ const BROKE_RECOVER  = 5;     // balance needed to clear the unpaid/"broke" stat
 
 // Stations hold multiple worker slots (capacity 1, upgradable) and offer upgrades.
 const MAX_SLOTS    = 3;       // worker slots a station can reach via the Capacity upgrade
+const MAX_SHELF    = 3;       // pre-made dishes a station's pickup shelf can hold
 const UPGRADE_MAX  = 3;       // max level for speed / price / efficiency
 const UPGRADE_GROW = 1.7;     // each level multiplies an upgrade's cost
 const UPGRADES = {
   cap:   { emoji:'👥', label:'Capacity',   effect:'+1 worker slot (cook in parallel)', base:120 },
+  shelf: { emoji:'🍱', label:'Pickup Shelf',effect:'+1 pre-made dish ready to serve',   base:90  },
   speed: { emoji:'⚡', label:'Cook Speed',  effect:'each level ~18% faster',            base:60  },
   price: { emoji:'💲', label:'Dish Price',  effect:'+3 💰 per dish served',              base:80  },
   eff:   { emoji:'🌿', label:'Efficiency',  effect:'chance to use no ingredient',        base:70  },
@@ -884,7 +886,16 @@ class Cafe extends Phaser.Scene {
     cont.add(status);
 
     const st = { type, slotIndex, x:slot.x, y:slot.y, accent, cont, status,
-                 slots: [], up:{ cap:1, speed:0, price:0, eff:0 }, stats:{ served:0, revenue:0 } };
+                 slots: [], shelfSlots: [], shelf:0, shelfMax:1,
+                 up:{ cap:1, speed:0, price:0, eff:0 }, stats:{ served:0, revenue:0 } };
+
+    // --- Pickup shelf: a row of pre-made dishes waiting to be served instantly ---
+    for (let k = 0; k < MAX_SHELF; k++) {
+      const plate = this.add.circle(0, 4, 8, COL.btnOff).setStrokeStyle(2, accent);
+      const dish  = this.add.text(0, 4, '', { fontSize:'13px' }).setOrigin(0.5);
+      cont.add(plate); cont.add(dish);
+      st.shelfSlots.push({ plate, dish });
+    }
 
     // --- Worker slots: created up to MAX_SLOTS, shown up to current capacity ---
     for (let k = 0; k < MAX_SLOTS; k++) {
@@ -895,13 +906,14 @@ class Cafe extends Phaser.Scene {
       const bar  = this.add.graphics();
       sc.add([dot, face, bub, bar]);
       cont.add(sc);
-      st.slots.push({ idx:k, cont:sc, dot, face, bubble:bub, bar, accent, pet:null, busy:false, customer:null, workTween:null, sx:0, sy:0 });
+      st.slots.push({ idx:k, cont:sc, dot, face, bubble:bub, bar, accent, pet:null, busy:false, workTween:null, sx:0, sy:0 });
     }
 
     slot.station = st;
     this.stations.push(st);
     if (slot.pad) slot.pad.cont.setVisible(false);
     this.layoutSlots(st);
+    this.layoutShelf(st);
     this.refreshStationStatus(st);
     this.refreshPantry();    // this stall's ingredient now matters
     return st;
@@ -915,8 +927,8 @@ class Cafe extends Phaser.Scene {
   effFree(st)        { return Math.random() < 0.2 * st.up.eff; }   // chance a dish uses no ingredient
   stationName(type)  { return { dumpling:'Dumpling', boba:'Boba', noodle:'Noodle' }[type] || type; }
 
-  upgradeLevel(st, key) { return key === 'cap' ? st.up.cap - 1 : st.up[key]; }
-  upgradeMaxed(st, key) { return key === 'cap' ? st.up.cap >= MAX_SLOTS : st.up[key] >= UPGRADE_MAX; }
+  upgradeLevel(st, key) { return key === 'cap' ? st.up.cap - 1 : key === 'shelf' ? st.shelfMax - 1 : st.up[key]; }
+  upgradeMaxed(st, key) { return key === 'cap' ? st.up.cap >= MAX_SLOTS : key === 'shelf' ? st.shelfMax >= MAX_SHELF : st.up[key] >= UPGRADE_MAX; }
   upgradeCost(st, key)  { return Math.round(UPGRADES[key].base * Math.pow(UPGRADE_GROW, this.upgradeLevel(st, key))); }
 
   // Position the active worker slots in a row beneath the stall; hide the rest.
@@ -930,6 +942,28 @@ class Cafe extends Phaser.Scene {
         sl.cont.setPosition(lx, ly);
         sl.sx = st.x + lx; sl.sy = st.y + ly;
       }
+    });
+  }
+
+  // Position the visible pickup-shelf plates in a row above the worker slots.
+  layoutShelf(st) {
+    const xs = ({ 1:[0], 2:[-15, 15], 3:[-24, 0, 24] })[st.shelfMax] || [0];
+    st.shelfSlots.forEach((ss, i) => {
+      const active = i < st.shelfMax;
+      ss.plate.setVisible(active);
+      ss.dish.setVisible(active);
+      if (active) { ss.plate.setX(xs[i]); ss.dish.setX(xs[i]); }
+    });
+    this.refreshShelf(st);
+  }
+
+  // Fill the first `st.shelf` plates with the dish; leave the rest as faint empties.
+  refreshShelf(st) {
+    st.shelfSlots.forEach((ss, i) => {
+      if (i >= st.shelfMax) return;
+      const filled = i < st.shelf;
+      ss.dish.setText(filled ? ORDERS[st.type].emoji : '');
+      ss.plate.setAlpha(filled ? 1 : 0.35);
     });
   }
 
@@ -1060,7 +1094,7 @@ class Cafe extends Phaser.Scene {
   // ---------------- Station Menu (upgrades + stats) ----------------
   openStationMenu(st) {
     this.closePicker(); this.closeMenu();
-    const keys = ['cap', 'speed', 'price', 'eff'];
+    const keys = ['cap', 'shelf', 'speed', 'price', 'eff'];
     const headH = 60, rowH = 50, padB = 16, panelW = 320, halfW = (panelW - 24) / 2;
     const panelH = headH + keys.length*rowH + padB + 18;
     const cx = W / 2, top = Phaser.Math.Clamp(420 - panelH / 2, 100, H - panelH - 20);
@@ -1082,8 +1116,8 @@ class Cafe extends Phaser.Scene {
       const ry = top + headH + rowH*i + rowH/2;
       const maxed = this.upgradeMaxed(st, key);
       const cost  = this.upgradeCost(st, key);
-      const lvl   = (key === 'cap') ? st.up.cap : st.up[key];
-      const cap   = (key === 'cap') ? MAX_SLOTS : UPGRADE_MAX;
+      const lvl   = (key === 'cap') ? st.up.cap : (key === 'shelf') ? st.shelfMax : st.up[key];
+      const cap   = (key === 'cap') ? MAX_SLOTS : (key === 'shelf') ? MAX_SHELF : UPGRADE_MAX;
       const afford = !maxed && this.coins >= cost && this.inFreePlay();
       const bg = maxed ? COL.cream : (afford ? COL.btn : COL.btnOff);
       cont.add(this.add.rectangle(cx, ry, panelW - 24, rowH - 8, bg).setStrokeStyle(2, COL.dim));
@@ -1115,7 +1149,9 @@ class Cafe extends Phaser.Scene {
     const cost = this.upgradeCost(st, key);
     if (this.coins < cost) { this.flashHint('Need ' + cost + ' 💰'); return; }
     this.coins -= cost;
-    if (key === 'cap') { st.up.cap += 1; this.layoutSlots(st); } else { st.up[key] += 1; }
+    if (key === 'cap') { st.up.cap += 1; this.layoutSlots(st); }
+    else if (key === 'shelf') { st.shelfMax += 1; this.layoutShelf(st); }
+    else { st.up[key] += 1; }
     this.refreshHud(); this.refreshToolbar();
     this.closeMenu(); this.openStationMenu(st);   // reopen to show new levels/costs
     this.flashHint(UPGRADES[key].emoji + ' ' + UPGRADES[key].label + ' upgraded!');
@@ -1228,8 +1264,10 @@ class Cafe extends Phaser.Scene {
     this.trySpawn();   // a seat just opened — bring the next in line
   }
 
-  // ---------------- Automatic order filling (per worker slot) ----------------
-  claimAndCook(st, sl, cu) {
+  // ---------------- Cooking onto the shelf + serving from it ----------------
+  // A worker cooks a dish onto the station's pickup shelf (no customer needed —
+  // this is pre-cooking during downtime). Consumes an ingredient like before.
+  cookToShelf(st, sl) {
     const ing = RECIPE_ING[st.type];
     if (this.pantry[ing] > 0 && !this.effFree(st)) {   // efficiency may skip consumption; grace cooks the last 0 free
       this.pantry[ing] -= 1;
@@ -1239,25 +1277,37 @@ class Cafe extends Phaser.Scene {
         this.flashHint('Out of ' + INGREDIENTS[ing].emoji + '! Tap the pantry to restock.');
       }
     }
-    sl.busy = true; sl.customer = cu;
-    cu.claimed = true; cu.bubble.setText('⏳'); cu.patBar.clear();
+    sl.busy = true;
     sl.bubble.setText(ORDERS[st.type].emoji);          // this worker is making this dish
     sl.workTween = this.tweens.add({ targets: sl.face, y: -3, duration: 300, yoyo:true, repeat:-1, ease:'Sine.InOut' });
     const prog = { v: 0 };
     this.tweens.add({
       targets: prog, v: 1, duration: this.cookMsFor(st), ease:'Linear',
       onUpdate: () => this.drawSlotBar(sl, prog.v),
-      onComplete: () => this.serve(st, sl, cu),
+      onComplete: () => this.finishCook(st, sl),
     });
   }
 
-  serve(st, sl, cu) {
-    sl.busy = false; sl.customer = null;
+  // A cook completes: the worker frees up and a dish lands on the shelf.
+  finishCook(st, sl) {
+    sl.busy = false;
     this.drawSlotBar(sl, 0);
     if (sl.workTween) { sl.workTween.stop(); sl.workTween = null; sl.face.y = 0; }
     sl.bubble.setText('');
-    const value = this.valueFor(st);
+    st.shelf = Math.min(st.shelfMax, st.shelf + 1);
+    this.refreshShelf(st);
+    this.refreshStationStatus(st);
+  }
 
+  // Hand a waiting customer a dish straight off the shelf — instant, no worker needed.
+  serveFromShelf(st, cu) {
+    cu.claimed = true; cu.bubble.setText('⏳'); cu.patBar.clear();
+    this.deliverDish(st, cu);
+  }
+
+  // Fly a dish from the station to the customer, then collect payment.
+  deliverDish(st, cu) {
+    const value = this.valueFor(st);
     const alive = cu.state === 'waiting' && cu.cont.active;
     const dish = this.add.text(st.x, st.y - 8, ORDERS[st.type].emoji, { fontSize:'22px' }).setOrigin(0.5).setDepth(40);
     const tx = alive ? cu.cont.x : st.x, ty = alive ? cu.cont.y - 4 : st.y;
@@ -1327,19 +1377,30 @@ class Cafe extends Phaser.Scene {
     return fallback;
   }
 
-  // Assign each idle staffed slot to a longest-waiting matching order, respecting
-  // ingredient stock and the broke/unpaid state. Slots cook in parallel.
+  // Each tick: first hand shelf dishes to waiting customers (instant, even if the
+  // station is unstaffed), then let idle staffed slots pre-cook to refill the shelf.
+  // Respects ingredient stock and the broke/unpaid state. Slots cook in parallel.
   runStations() {
     const grace = this.broke ? this.graceSlot() : null;
     for (const st of this.stations) {
+      // 1) Serve from the shelf while we have stock and a matching waiting guest.
+      while (st.shelf > 0) {
+        const cu = this.customers.find(c => c.state === 'waiting' && !c.claimed && c.type === st.type);
+        if (!cu) break;
+        st.shelf -= 1;
+        this.refreshShelf(st);
+        this.serveFromShelf(st, cu);
+      }
+      // 2) Pre-cook to keep the shelf topped up (counting in-progress cooks).
       const ing = RECIPE_ING[st.type];
       for (const sl of this.activeSlots(st)) {
         if (!sl.pet || sl.busy) continue;
         const isGrace = (sl === grace);
         if (this.broke && !isGrace) continue;                       // unpaid → idle
         if ((this.pantry[ing] || 0) <= 0 && !isGrace) continue;     // out of stock
-        const cu = this.customers.find(c => c.state === 'waiting' && !c.claimed && c.type === st.type);
-        if (cu) this.claimAndCook(st, sl, cu);
+        const cooking = this.activeSlots(st).filter(s => s.busy).length;
+        if (st.shelf + cooking >= st.shelfMax) break;               // shelf full (or will be)
+        this.cookToShelf(st, sl);
       }
       this.refreshStationStatus(st);
     }
