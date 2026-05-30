@@ -134,7 +134,8 @@ class Cafe extends Phaser.Scene {
     //  h-earn      "Grand Opening" quest begins; tables 2 & 4 unlock; save toward a 2nd helper
     //  h-hire      saved enough — advised to hire a second helper
     //  h-assign    2nd helper hired; assign them to a stall
-    //  h-tables    both helpers working; buy 2 more tables to trigger the grand opening
+    //  h-tables    both helpers working; buy 2 more tables (the last goal)
+    //  grand-ready all goals met; press the big GRAND OPENING button to celebrate
     //  done        normal play (tutorial complete)
     this.tutPhase = 'setup';
     this.storeOpen = false;       // becomes true once — the store never closes again
@@ -224,7 +225,8 @@ class Cafe extends Phaser.Scene {
       case 'h-earn':
       case 'h-hire':
       case 'h-assign':
-      case 'h-tables': return true;            // free play
+      case 'h-tables':
+      case 'grand-ready': return true;         // free play
       case 'setup':   return type === 'dumpling' && this.currentSetupStep() === 0;
       case 'b-build': return type === 'boba';
       default:        return false;           // open-ready, d-supply, d-run, b-move
@@ -232,7 +234,7 @@ class Cafe extends Phaser.Scene {
   }
 
   // tutorial phases that behave like normal play for building/managing helpers
-  inFreePlay() { return this.tutPhase === 'done' || this.tutPhase === 'h-earn' || this.tutPhase === 'h-hire' || this.tutPhase === 'h-assign' || this.tutPhase === 'h-tables'; }
+  inFreePlay() { return this.tutPhase === 'done' || this.tutPhase === 'h-earn' || this.tutPhase === 'h-hire' || this.tutPhase === 'h-assign' || this.tutPhase === 'h-tables' || this.tutPhase === 'grand-ready'; }
 
   // hint shown when a gated control is tapped before its phase
   tutHint() {
@@ -247,6 +249,7 @@ class Cafe extends Phaser.Scene {
       'h-hire'    :'Hire your new helper first 🐾',
       'h-assign'  :'Assign your 2nd helper to a stall 🐾',
       'h-tables'  :'Buy 2 more tables for your grand opening 🪑',
+      'grand-ready':'Press GRAND OPENING to cut the ribbon! 🎉',
     }[this.tutPhase] || '';
   }
 
@@ -285,7 +288,7 @@ class Cafe extends Phaser.Scene {
   checkSetup() {
     if (this.tutPhase !== 'setup') return;
     this.refreshQuests(); this.refreshToolbar(); this.refreshBuildPads(); this.refreshTables();
-    if (this.setupComplete()) { this.setPhase('open-ready'); this.showOpenButton(true); }
+    if (this.setupComplete()) { this.setPhase('open-ready'); this.showOpenButton(true, 'OPEN THE STORE 🎉'); }
     this.updateTutorialTip();   // show/hide the step's anchored bubble
   }
 
@@ -325,14 +328,23 @@ class Cafe extends Phaser.Scene {
   }
 
   // 2nd helper placed — advance to the final "buy 2 more tables" goal. If the player
-  // already bought them earlier in the quest, celebrate immediately.
+  // already bought them earlier in the quest, the big button is ready right away.
   startTableStep() {
     this.setPhase('h-tables');
-    if (this.builtTables() >= 3) this.grandOpen();   // tables already bought → open now
+    if (this.builtTables() >= 3) this.grandOpeningReady();   // tables already bought → ready to open
   }
 
-  // All "Grand Opening" goals met — throw the celebration and finish the tutorial.
+  // All "Grand Opening" goals met — show the big "GRAND OPENING!" button to press
+  // (mirrors the "OPEN THE STORE" moment) instead of celebrating automatically.
+  grandOpeningReady() {
+    if (this.tutPhase === 'grand-ready' || this.tutPhase === 'done') return;
+    this.setPhase('grand-ready');
+    this.showOpenButton(true, 'GRAND OPENING! 🎉');
+  }
+
+  // The player pressed the big button — throw the celebration and finish the tutorial.
   grandOpen() {
+    this.showOpenButton(false);
     this.setPhase('done'); this.setStepHint('');
     this.coins += GRAND_OPENING_BONUS;
     this.refreshHud(); this.refreshToolbar();
@@ -380,10 +392,11 @@ class Cafe extends Phaser.Scene {
       case 'h-hire':
       case 'h-assign':
       case 'h-tables':
+      case 'grand-ready':
         return { title:'🎉 Grand Opening', items:[
           { t:'Save up ' + COST.pet + ' 💰', done:this.tutPhase !== 'h-earn' },
-          { t:'Hire a 2nd helper 🐾', done:this.tutPhase === 'h-assign' || this.tutPhase === 'h-tables' },
-          { t:'Assign your 2nd helper 🐾', done:this.tutPhase === 'h-tables' },
+          { t:'Hire a 2nd helper 🐾', done:this.workers.length >= 2 },
+          { t:'Assign your 2nd helper 🐾', done:this.workers.filter(w => w.station).length >= 2 },
           { t:'Buy 2 more tables 🪑', done:this.builtTables() >= 3 },
         ]};
       default:
@@ -421,7 +434,8 @@ class Cafe extends Phaser.Scene {
     this.openBtn = { x, y, w, h, rect, txt, tween:null };
   }
 
-  showOpenButton(v) {
+  showOpenButton(v, label) {
+    if (label) this.openBtn.txt.setText(label);
     this.openBtn.rect.setVisible(v);
     this.openBtn.txt.setVisible(v);
     if (v && !this.openBtn.tween) {
@@ -845,7 +859,10 @@ class Cafe extends Phaser.Scene {
     if (this.picker)  { this.pickerTap(px, py); return; }
     if (this.menu)    { this.menuTap(px, py); return; }
     // OPEN THE STORE button (shown once setup is complete)
-    if (this.openBtn && this.openBtn.rect.visible && this.inBox(px, py, this.openBtn, this.openBtn.w/2, this.openBtn.h/2)) { this.openStore(); return; }
+    if (this.openBtn && this.openBtn.rect.visible && this.inBox(px, py, this.openBtn, this.openBtn.w/2, this.openBtn.h/2)) {
+      if (this.tutPhase === 'grand-ready') this.grandOpen(); else this.openStore();
+      return;
+    }
     // toolbar (hire / table) buttons
     for (const b of this.buttons) {
       if (this.inBox(px, py, b, b.w/2, b.h/2)) { this.onButton(b); return; }
@@ -902,8 +919,8 @@ class Cafe extends Phaser.Scene {
     this.checkSetup();
     this.refreshQuests();
     if (this.tutPhase === 'h-tables') {
-      if (this.builtTables() >= 3) this.grandOpen();   // last Grand Opening goal met
-      else this.updateTutorialTip();                   // re-point the hint at the next open table
+      if (this.builtTables() >= 3) this.grandOpeningReady();   // last goal met → show the GRAND OPENING button
+      else this.updateTutorialTip();                           // re-point the hint at the next open table
     }
   }
 
