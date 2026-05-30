@@ -889,10 +889,10 @@ class Cafe extends Phaser.Scene {
                  slots: [], shelfSlots: [], shelf:0, shelfMax:1,
                  up:{ cap:1, speed:0, price:0, eff:0 }, stats:{ served:0, revenue:0 } };
 
-    // --- Pickup shelf: a row of pre-made dishes waiting to be served instantly ---
+    // --- Pickup shelf: pre-made dishes line up on the serving counter below the stall ---
     for (let k = 0; k < MAX_SHELF; k++) {
-      const plate = this.add.circle(0, 4, 8, COL.btnOff).setStrokeStyle(2, accent);
-      const dish  = this.add.text(0, 4, '', { fontSize:'13px' }).setOrigin(0.5);
+      const plate = this.add.circle(0, 103, 9, COL.btnOff).setStrokeStyle(2, accent);
+      const dish  = this.add.text(0, 103, '', { fontSize:'14px' }).setOrigin(0.5);
       cont.add(plate); cont.add(dish);
       st.shelfSlots.push({ plate, dish });
     }
@@ -945,9 +945,9 @@ class Cafe extends Phaser.Scene {
     });
   }
 
-  // Position the visible pickup-shelf plates in a row above the worker slots.
+  // Position the visible pickup-shelf plates in a row along the serving counter.
   layoutShelf(st) {
-    const xs = ({ 1:[0], 2:[-15, 15], 3:[-24, 0, 24] })[st.shelfMax] || [0];
+    const xs = ({ 1:[0], 2:[-18, 18], 3:[-28, 0, 28] })[st.shelfMax] || [0];
     st.shelfSlots.forEach((ss, i) => {
       const active = i < st.shelfMax;
       ss.plate.setVisible(active);
@@ -1309,7 +1309,7 @@ class Cafe extends Phaser.Scene {
   deliverDish(st, cu) {
     const value = this.valueFor(st);
     const alive = cu.state === 'waiting' && cu.cont.active;
-    const dish = this.add.text(st.x, st.y - 8, ORDERS[st.type].emoji, { fontSize:'22px' }).setOrigin(0.5).setDepth(40);
+    const dish = this.add.text(st.x, st.y + 103, ORDERS[st.type].emoji, { fontSize:'22px' }).setOrigin(0.5).setDepth(40);
     const tx = alive ? cu.cont.x : st.x, ty = alive ? cu.cont.y - 4 : st.y;
     const dist = Phaser.Math.Distance.Between(st.x, st.y, tx, ty);
     this.tweens.add({
