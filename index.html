@@ -66,27 +66,34 @@ const INGREDIENTS = {
   broth: { emoji:'🍲', label:'Broth' },   // 🍜 noodles (future)
 };
 
-// ---- Recipes: an ordered list of tap-steps. Each step trains independently. ----
-const RECIPES = {
-  boiled: { value:6, steps:[
-    { emoji:'🌾', label:'Wrap', ms:600 },
-    { emoji:'🥩', label:'Fill', ms:600 },
-    { emoji:'♨️', label:'Boil', ms:1000 },
-  ]},
-  // Reserved for a later phase (boba stall):
-  milktea: { value:8, steps:[
-    { emoji:'🍵', label:'Brew', ms:700 },
-    { emoji:'🥛', label:'Pour', ms:600 },
-    { emoji:'🟤', label:'Pearls', ms:700 },
-  ]},
+// ---- Steps: the shared library recipes are built from. Steps reused across
+//      recipes (wrap, fill) share ONE training meter per stall — so unlocking a
+//      recipe that reuses them leaves only the genuinely new step to learn. ----
+const STEPS = {
+  wrap:   { emoji:'🌾',  label:'Wrap',   ms:600 },
+  fill:   { emoji:'🥩',  label:'Fill',   ms:600 },
+  boil:   { emoji:'♨️',  label:'Boil',   ms:1000 },
+  fry:    { emoji:'🍳',  label:'Fry',    ms:1100 },
+  brew:   { emoji:'🍵',  label:'Brew',   ms:700 },
+  pour:   { emoji:'🥛',  label:'Pour',   ms:600 },
+  pearls: { emoji:'🟤',  label:'Pearls', ms:700 },
 };
 
-// ---- Stalls: the market roster. Only the dumpling stall is enterable for now. ----
-//   open   — playable
-//   locked — buyable to open in a later phase (shown with a price)
-//   soon   — reserved for a future update
+// ---- Recipes: an ordered list of step ids. A stall can switch between the
+//      recipes it has unlocked (e.g. buying a pan unlocks pan-fried). ----
+const RECIPES = {
+  boiled:   { name:'Boiled',    emoji:'🥟', value:6,  steps:['wrap','fill','boil'] },
+  panfried: { name:'Pan-fried', emoji:'🥟', value:11, steps:['wrap','fill','fry'] },
+  milktea:  { name:'Milk Tea',  emoji:'🧋', value:8,  steps:['brew','pour','pearls'] },
+};
+
+// ---- Stalls: the market roster. Only the dumpling stall is enterable for now.
+//   state: open / locked (buyable later) / soon.
+//   recipe: the recipe available from the start.
+//   unlock: an optional equipment purchase that adds a second recipe.
 const STALLS = {
-  dumpling: { name:'Dumpling Stall', emoji:'🥟', accent:COL.red,   ingredient:'dough', recipe:'boiled',  state:'open' },
+  dumpling: { name:'Dumpling Stall', emoji:'🥟', accent:COL.red,   ingredient:'dough', recipe:'boiled',  state:'open',
+              unlock:{ recipe:'panfried', cost:250, equip:'🍳 Pan' } },
   boba:     { name:'Boba Stall',     emoji:'🧋', accent:COL.pink,  ingredient:'tea',   recipe:'milktea', state:'locked', cost:250 },
   noodle:   { name:'Noodle Stall',   emoji:'🍜', accent:COL.amber, ingredient:'broth', recipe:'noodlesoup', state:'soon' },
 };
@@ -110,13 +117,17 @@ const WORKER_EMOJIS  = ['🐱', '🐶', '🐰', '🐻', '🦊', '🐼', '🐯', 
    Game state (shared across scenes) + pure helpers
    ========================================================================== */
 function makeStallState(id) {
-  const r = RECIPES[STALLS[id].recipe];
+  const def = STALLS[id].recipe;            // the recipe available from the start
+  const train = {};                         // per-STEP-ID training meter, 0..1 (shared across recipes)
+  if (RECIPES[def]) RECIPES[def].steps.forEach(sid => { train[sid] = 0; });
   return {
     id,
-    train: r ? r.steps.map(() => 0) : [],   // per-step training meter, 0..1
+    active: def,                            // the recipe this stall is currently making
+    unlocked: def ? [def] : [],             // recipe keys this stall can switch between
+    train,
     served: 0,
     revenue: 0,
-    acc: 0,                                  // fractional cycle progress for passive income
+    acc: 0,                                 // fractional cycle progress for passive income
   };
 }
 
@@ -130,13 +141,14 @@ const G = {
   firstCookDone: false,        // clears the opening nudge
 };
 
-const recipeOf  = id => RECIPES[STALLS[id].recipe];
-const cycleMs   = id => recipeOf(id).steps.reduce((a, s) => a + s.ms, 0);
+const recipeOf  = id => RECIPES[G.stalls[id].active];          // the stall's *active* recipe
+const cycleMs   = id => recipeOf(id).steps.reduce((a, sid) => a + STEPS[sid].ms, 0);
 const workersAt = id => G.workers.filter(w => w.stallId === id);
-const isLearned = (id, k) => G.stalls[id].train[k] >= 1;
+const trainOf   = (id, sid) => G.stalls[id].train[sid] || 0;
+const isLearned = (id, sid) => trainOf(id, sid) >= 1;
 const isAutomated = id => {
   const r = recipeOf(id);
-  return STALLS[id].state === 'open' && workersAt(id).length > 0 && r.steps.every((_, k) => isLearned(id, k));
+  return STALLS[id].state === 'open' && workersAt(id).length > 0 && r.steps.every(sid => isLearned(id, sid));
 };
 
 // Continuous wage drain — coins never go negative (helpers simply work for free if broke).
@@ -251,7 +263,7 @@ class Market extends Phaser.Scene {
     for (const c of this.cards) {
       if (c.cfg.state !== 'open') continue;
       const s = G.stalls[c.id], ing = c.cfg.ingredient, r = recipeOf(c.id);
-      const learned = r.steps.filter((_, k) => isLearned(c.id, k)).length;
+      const learned = r.steps.filter(sid => isLearned(c.id, sid)).length;
       let txt;
       if (isAutomated(c.id)) {
         const rate = (r.value / (cycleMs(c.id) / 1000));
@@ -332,6 +344,7 @@ class Stall extends Phaser.Scene {
     this.buildHelper();
     this.buildHintPill();
     this.buildDishToken();
+    this.buildRecipeTabs();
     this.refreshAll();
 
     this.input.on('pointerdown', p => this.handleTap(p.x, p.y));
@@ -351,7 +364,6 @@ class Stall extends Phaser.Scene {
     g.fillRect(0, H-8, W, 8);
     g.fillStyle(COL.floor, 1).fillRect(DOOR.x-38, H-8, 76, 8);                       // doorway
     g.fillStyle(COL.counter, 1).fillRoundedRect(20, COUNTER_Y-13, W-40, 26, 8);      // serving counter
-    this.add.text(W/2, 145, 'PREP LINE', { fontFamily:FONT, fontSize:'11px', color:hex(COL.dim), fontStyle:'800' }).setOrigin(0.5).setDepth(2);
     this.add.text(W/2, COUNTER_Y+24, 'waiting line', { fontFamily:FONT, fontSize:'11px', color:hex(COL.dim) }).setOrigin(0.5).setDepth(2);
   }
 
@@ -384,10 +396,11 @@ class Stall extends Phaser.Scene {
 
   // ---------------- Prep line (the tap-steps) ----------------
   buildPrepLine() {
+    if (this.stepBtns) this.stepBtns.forEach(b => b.cont.destroy());   // rebuilt when the recipe switches
     // Centered a touch left of middle so the helper column on the right has clear space.
     const n = this.recipe.steps.length, gap = 92, startX = 168 - (n-1)*gap/2;
-    this.stepBtns = this.recipe.steps.map((s, i) => {
-      const x = startX + i*gap, y = PREP_Y, bw = 88, bh = 96;
+    this.stepBtns = this.recipe.steps.map((sid, i) => {
+      const s = STEPS[sid], x = startX + i*gap, y = PREP_Y, bw = 88, bh = 96;
       const cont = this.add.container(x, y).setDepth(10);
       const bg = this.add.graphics();
       const emoji = this.add.text(0, -22, s.emoji, { fontSize:'30px' }).setOrigin(0.5);
@@ -395,17 +408,17 @@ class Stall extends Phaser.Scene {
       const mark  = this.add.text(0, 28, '', { fontFamily:FONT, fontSize:'11px', fontStyle:'800' }).setOrigin(0.5);
       const meter = this.add.graphics();   // training meter (bottom) + perform progress (overlay)
       cont.add([bg, emoji, label, mark, meter]);
-      return { i, x, y, bw, bh, cont, bg, emoji, label, mark, meter };
+      return { i, sid, x, y, bw, bh, cont, bg, emoji, label, mark, meter };
     });
   }
 
   // Draw one step button: frame reflects manual / learned / auto / active.
   refreshStepBtn(i) {
-    const b = this.stepBtns[i], s = this.recipe.steps[i];
-    const learned = isLearned(this.id, i);
+    const b = this.stepBtns[i], sid = b.sid;
+    const learned = isLearned(this.id, sid);
     const auto = this.isAuto(i);
     const isCurrent = this.dish.step === i;
-    const train = Phaser.Math.Clamp(this.stall.train[i], 0, 1);
+    const train = Phaser.Math.Clamp(trainOf(this.id, sid), 0, 1);
 
     b.bg.clear();
     const frame = auto ? COL.blue : (isCurrent ? COL.btn : this.cfg.accent);
@@ -430,8 +443,8 @@ class Stall extends Phaser.Scene {
       const mw = b.bw - 20, mx = -mw/2, my = b.bh/2 - 11;
       b.meter.clear();
       // base training meter
-      const train = Phaser.Math.Clamp(this.stall.train[i], 0, 1);
-      const learned = isLearned(this.id, i);
+      const train = Phaser.Math.Clamp(trainOf(this.id, b.sid), 0, 1);
+      const learned = isLearned(this.id, b.sid);
       b.meter.fillStyle(COL.cream, 1).fillRoundedRect(mx, my, mw, 5, 2);
       b.meter.fillStyle(learned ? COL.green : COL.amber, 1).fillRoundedRect(mx, my, mw*train, 5, 2);
       // perform ring across the top
@@ -443,15 +456,79 @@ class Stall extends Phaser.Scene {
 
   // ---------------- In-progress dish token ----------------
   buildDishToken() {
-    this.token = this.add.text(this.stepBtns[0].x, TOKEN_Y, this.cfg.emoji, { fontSize:'30px' }).setOrigin(0.5).setDepth(12);
+    this.token = this.add.text(this.stepBtns[0].x, TOKEN_Y, this.recipe.emoji, { fontSize:'30px' }).setOrigin(0.5).setDepth(12);
     this.refreshToken();
   }
 
   refreshToken() {
     const steps = this.recipe.steps.length;
     const k = Math.min(this.dish.step, steps - 1);
-    this.token.setX(this.stepBtns[k].x);
+    this.token.setText(this.recipe.emoji).setX(this.stepBtns[k].x);
     this.token.setAlpha(0.3 + 0.7 * (this.dish.step / steps));
+  }
+
+  // ---------------- Recipe tabs (switch recipe / buy equipment) ----------------
+  // Shown only when a stall can hold more than one recipe (e.g. dumplings, once
+  // the pan is bought). The second tab doubles as the equipment-purchase button.
+  buildRecipeTabs() {
+    const u = STALLS[this.id].unlock;
+    this.recipeKeys = u ? [STALLS[this.id].recipe, u.recipe] : [STALLS[this.id].recipe];
+    this.recipeTabs = [];
+    if (this.recipeKeys.length < 2) return;            // nothing to switch between — no tabs
+    const n = this.recipeKeys.length, tw = 156, gap = 10, y = 323;
+    const startX = W/2 - ((n-1)*(tw+gap))/2;
+    this.recipeKeys.forEach((key, i) => {
+      const x = startX + i*(tw+gap);
+      const bg  = this.add.graphics().setDepth(9);
+      const txt = this.add.text(x, y, '', { fontFamily:FONT, fontSize:'12.5px', fontStyle:'800', align:'center' }).setOrigin(0.5).setDepth(10);
+      this.recipeTabs.push({ key, x, y, w:tw, h:38, bg, txt });
+    });
+  }
+
+  refreshRecipeTabs() {
+    if (!this.recipeTabs) return;
+    for (const tab of this.recipeTabs) {
+      const r = RECIPES[tab.key];
+      const unlocked = this.stall.unlocked.includes(tab.key);
+      const active = this.stall.active === tab.key;
+      const u = STALLS[this.id].unlock;
+      tab.bg.clear();
+      const x = tab.x - tab.w/2, y = tab.y - tab.h/2;
+      if (!unlocked) {                                  // the locked recipe = buy-equipment button
+        const afford = G.coins >= u.cost;
+        tab.bg.fillStyle(afford ? COL.amber : COL.btnOff, afford ? 0.18 : 0.12).fillRoundedRect(x, y, tab.w, tab.h, 12);
+        tab.bg.lineStyle(2.5, afford ? COL.amber : COL.dim, 1).strokeRoundedRect(x, y, tab.w, tab.h, 12);
+        tab.txt.setText(u.equip + ' 🔒\nunlock ' + r.name + ' · ' + u.cost + '💰').setColor(hex(afford ? COL.brown : COL.dim));
+      } else {
+        const col = this.cfg.accent;
+        tab.bg.fillStyle(col, active ? 0.22 : 0.08).fillRoundedRect(x, y, tab.w, tab.h, 12);
+        tab.bg.lineStyle(active ? 3.5 : 2, col, active ? 1 : 0.6).strokeRoundedRect(x, y, tab.w, tab.h, 12);
+        tab.txt.setText((active ? '▶ ' : '') + r.emoji + ' ' + r.name + '\n' + r.value + '💰 each').setColor(hex(COL.brown));
+      }
+    }
+  }
+
+  // Switch the stall to a different unlocked recipe. Shared steps keep their
+  // training; only steps unique to the new recipe still need learning.
+  setActiveRecipe(key) {
+    if (this.stall.active === key || !this.stall.unlocked.includes(key)) return;
+    this.stall.active = key;
+    this.recipe = recipeOf(this.id);
+    this.dish = { step:0, performing:false, prog:0, manual:false, consumed:false };   // steps changed — reset the line
+    this.buildPrepLine();
+    this.refreshAll();
+  }
+
+  tryBuyEquipment(key) {
+    const u = STALLS[this.id].unlock;
+    if (!u || u.recipe !== key) return;
+    if (G.coins < u.cost) { this.flashHint('Need ' + u.cost + ' 💰 for the ' + u.equip); return; }
+    G.coins -= u.cost;
+    this.stall.unlocked.push(key);
+    RECIPES[key].steps.forEach(sid => { if (!(sid in this.stall.train)) this.stall.train[sid] = 0; });
+    const newStep = RECIPES[key].steps.find(sid => trainOf(this.id, sid) < 1) || RECIPES[key].steps[RECIPES[key].steps.length-1];
+    this.setActiveRecipe(key);                          // switch to the new recipe straight away
+    this.flashHint(u.equip + ' bought! Learn the new ' + STEPS[newStep].emoji + ' ' + STEPS[newStep].label + ' step 👆', 2400);
   }
 
   // ---------------- Pickup tray ----------------
@@ -464,13 +541,12 @@ class Stall extends Phaser.Scene {
       const dish  = this.add.text(x, TRAY_Y, '', { fontSize:'17px' }).setOrigin(0.5).setDepth(9);
       this.trayPlates.push({ x, plate, dish });
     }
-    this.add.text(W/2, TRAY_Y-26, 'pickup tray', { fontFamily:FONT, fontSize:'10px', color:hex(COL.dim) }).setOrigin(0.5).setDepth(8);
   }
 
   refreshTray() {
     this.trayPlates.forEach((p, i) => {
       const filled = i < this.tray.length;
-      p.dish.setText(filled ? this.cfg.emoji : '');
+      p.dish.setText(filled ? this.recipe.emoji : '');
       p.plate.setAlpha(filled ? 1 : 0.35);
     });
   }
@@ -530,9 +606,14 @@ class Stall extends Phaser.Scene {
 
   // The standing instruction shown when nothing transient is up.
   updateStandingHint() {
-    if (!G.firstCookDone)            this.setHint('👆 Tap ' + this.recipe.steps[0].emoji + ' ' + this.recipe.steps[0].label + ' to make a ' + this.cfg.emoji + ' by hand');
+    const first = STEPS[this.recipe.steps[0]];
+    const u = STALLS[this.id].unlock;
+    const panBuyable = u && !this.stall.unlocked.includes(u.recipe);
+    if (!G.firstCookDone)            this.setHint('👆 Tap ' + first.emoji + ' ' + first.label + ' to make a ' + this.recipe.emoji + ' by hand');
+    else if (isAutomated(this.id) && panBuyable && G.coins >= u.cost)
+                                     this.setHint('Now buy the ' + u.equip + ' to unlock ' + RECIPES[u.recipe].name + ' ' + RECIPES[u.recipe].emoji + ' — worth more!');
     else if (isAutomated(this.id))   this.setHint('🤖 This stall runs itself — head back to the market and work another!');
-    else if (workersAt(this.id).length === 0 && G.coins >= HIRE_COST && this.recipe.steps.some((_, k) => isLearned(this.id, k)))
+    else if (workersAt(this.id).length === 0 && G.coins >= HIRE_COST && this.recipe.steps.some(sid => isLearned(this.id, sid)))
                                      this.setHint('Hire a helper 🐾 — they take over every step you\'ve learned');
     else                             this.setHint('Keep cooking — each tap trains that step toward 🤖 auto');
   }
@@ -543,12 +624,13 @@ class Stall extends Phaser.Scene {
     this.refreshTray();
     this.refreshHelper();
     this.refreshToken();
+    this.refreshRecipeTabs();
     this.stepBtns.forEach((_, i) => this.refreshStepBtn(i));
     this.updateStandingHint();
   }
 
   // ---------------- Cooking logic ----------------
-  isAuto(k) { return isLearned(this.id, k) && workersAt(this.id).length > 0; }
+  isAuto(k) { return isLearned(this.id, this.recipe.steps[k]) && workersAt(this.id).length > 0; }
 
   startStep(k, manual) {
     if (k === 0 && !this.dish.consumed) {                 // a fresh dish draws one ingredient
@@ -570,7 +652,8 @@ class Stall extends Phaser.Scene {
     this.dish.performing = false;
     this.dish.prog = 0;
     if (this.dish.manual) {                               // only hand-work trains a step
-      this.stall.train[k] = Math.min(1, this.stall.train[k] + TRAIN_PER_TAP);
+      const sid = this.recipe.steps[k];
+      this.stall.train[sid] = Math.min(1, trainOf(this.id, sid) + TRAIN_PER_TAP);
       if (!G.firstCookDone) { G.firstCookDone = true; this.updateStandingHint(); }
     }
     this.dish.step = k + 1;
@@ -584,7 +667,7 @@ class Stall extends Phaser.Scene {
     this.tray.push(true);
     // fly a copy of the token down to the next open tray plate
     const plate = this.trayPlates[this.tray.length - 1];
-    const fly = this.add.text(this.token.x, TOKEN_Y, this.cfg.emoji, { fontSize:'24px' }).setOrigin(0.5).setDepth(30);
+    const fly = this.add.text(this.token.x, TOKEN_Y, this.recipe.emoji, { fontSize:'24px' }).setOrigin(0.5).setDepth(30);
     this.tweens.add({ targets: fly, x: plate.x, y: TRAY_Y, duration: 280, ease:'Quad.Out', onComplete: () => { fly.destroy(); this.refreshTray(); } });
     // reset the line for the next dish
     this.dish.step = 0; this.dish.performing = false; this.dish.prog = 0; this.dish.consumed = false;
@@ -598,7 +681,7 @@ class Stall extends Phaser.Scene {
     if (this.dish.step >= steps.length) { this.depositDish(); return; }
     const k = this.dish.step;
     if (this.dish.performing) {
-      this.dish.prog += delta / steps[k].ms;
+      this.dish.prog += delta / STEPS[steps[k]].ms;
       if (this.dish.prog >= 1) this.completeStep(k);
     } else if (this.isAuto(k)) {
       this.startStep(k, false);                           // helper handles a learned step hands-free
@@ -614,7 +697,7 @@ class Stall extends Phaser.Scene {
     cont.add(this.add.circle(0, 0, 22, COL.card).setStrokeStyle(3, COL.dim));
     cont.add(this.add.text(0, 0, '🙂', { fontSize:'22px' }).setOrigin(0.5));
     cont.add(this.add.circle(0, -42, 16, COL.cream).setStrokeStyle(2, COL.dim));
-    const bubble = this.add.text(0, -42, this.cfg.emoji, { fontSize:'18px' }).setOrigin(0.5);
+    const bubble = this.add.text(0, -42, this.recipe.emoji, { fontSize:'18px' }).setOrigin(0.5);
     const patBar = this.add.graphics();
     cont.add([bubble, patBar]);
     const cu = { cont, bubble, patBar, patience: PATIENCE_MS, state:'walking' };
@@ -648,7 +731,7 @@ class Stall extends Phaser.Scene {
     const val = this.recipe.value;
     // a dish flies from the tray to the guest, then pays out
     const src = this.trayPlates[this.tray.length] || this.trayPlates[0];
-    const fly = this.add.text(src.x, TRAY_Y, this.cfg.emoji, { fontSize:'20px' }).setOrigin(0.5).setDepth(35);
+    const fly = this.add.text(src.x, TRAY_Y, this.recipe.emoji, { fontSize:'20px' }).setOrigin(0.5).setDepth(35);
     this.tweens.add({ targets: fly, x: cu.cont.x, y: cu.cont.y, duration: 260, ease:'Quad.Out', onComplete: () => {
       fly.destroy();
       G.coins += val; this.stall.served += 1; this.stall.revenue += val;
@@ -689,11 +772,22 @@ class Stall extends Phaser.Scene {
     if (hitBtn(px, py, this.backBtn)) { this.scene.start('market'); return; }
     if (inBox(px, py, this.pantryChip, this.pantryChip.w/2, this.pantryChip.h/2)) { this.doRestock(); return; }
     if (this.hireBtn.rect.visible && hitBtn(px, py, this.hireBtn)) { this.doHire(); return; }
+    // recipe tabs: select an unlocked recipe, or buy the equipment that unlocks it
+    for (const tab of this.recipeTabs) {
+      if (!inBox(px, py, tab, tab.w/2, tab.h/2)) continue;
+      if (this.stall.unlocked.includes(tab.key)) {
+        this.setActiveRecipe(tab.key);
+        this.flashHint('Now making ' + RECIPES[tab.key].emoji + ' ' + RECIPES[tab.key].name);
+      } else {
+        this.tryBuyEquipment(tab.key);
+      }
+      return;
+    }
     // a prep step: only the CURRENT, manual step responds to a tap
     for (const b of this.stepBtns) {
       if (!inBox(px, py, b, b.bw/2, b.bh/2)) continue;
       if (this.dish.step !== b.i) { this.flashHint('Make the steps in order 👉'); return; }
-      if (this.isAuto(b.i)) { this.flashHint('🤖 ' + this.recipe.steps[b.i].label + ' is automated — let your helper'); return; }
+      if (this.isAuto(b.i)) { this.flashHint('🤖 ' + STEPS[b.sid].label + ' is automated — let your helper'); return; }
       if (this.dish.performing) return;
       this.startStep(b.i, true);
       return;
