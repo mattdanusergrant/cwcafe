@@ -859,12 +859,14 @@ class Stall extends Phaser.Scene {
 
   // The apprentice in the trainee slot masters the active recipe whenever ANY station
   // is worked — by the player OR by a deployed helper — so helpers train each other.
+  // Floats the rolled amount so the RNG is visible.
   gainMastery(amount) {
     const w = this.stall.trainee;
     if (!w) return;
     const key = this.stall.active, before = wMastery(w, this.id);
     if (before >= MASTER_MAX) return;
     w.mastery[key] = Math.min(MASTER_MAX, before + amount);
+    this.floatText(TRAINEE.x + 70, TRAINEE.y - 16, '+' + amount, COL.amber);   // show the roll
     if (w.mastery[key] >= MASTER_MAX) {
       this.floatText(TRAINEE.x, TRAINEE.y - 26, '⭐ Mastered!', COL.green);
       this.flashHint('🎓 ' + w.name + ' mastered ' + this.recipe.name + ' — tap a slot to deploy them', 2400);
