@@ -136,7 +136,7 @@ function makeStallState(id) {
 
 // Each helper is an individual with their own profile + per-recipe mastery.
 const NAMES  = ['Mochi','Pip','Suki','Bao','Yuki','Coco','Tofu','Miso','Nori','Yam'];
-const SPEEDS = [1.0, 1.2, 0.9, 1.15, 1.3, 0.95, 1.1, 1.25];   // innate throughput multiplier
+const SPEEDS = [0.5, 0.6, 0.45, 0.575, 0.65, 0.475, 0.55, 0.625];   // innate throughput multiplier (lower = slower)
 function makeWorker() {
   const i = G.workerSeq++;
   return { emoji: WORKER_EMOJIS[i % WORKER_EMOJIS.length], name: NAMES[i % NAMES.length],
