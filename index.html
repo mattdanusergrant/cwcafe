@@ -412,7 +412,8 @@ class Market extends Phaser.Scene {
    STALL SCENE — the cooking floor for one stall
    ========================================================================== */
 const TRAINEE_Y = 150;   // apprentice slot (top, centered)
-const LINE_Y    = 250;   // the production line: one workstation per step, buffers between
+const LINE_Y    = 250;   // the production line: one manual button per step, buffers between
+const SLOT_DY   = 50;    // a helper slot sits this far beneath each manual button
 const TABS_Y    = 322;   // recipe selector tabs (dumpling only)
 const TRAY_Y    = 374;   // finished dishes line the pickup tray
 const COUNTER_Y = 416;   // the serving counter band
@@ -524,30 +525,40 @@ class Stall extends Phaser.Scene {
     this.pantryChip.box.setStrokeStyle(2, stock === 0 ? COL.red : COL.dim);
   }
 
-  // ---------------- Production line: one workstation per step, buffers between ----------------
+  // ---------------- Production line: a manual button per step + a helper slot beneath each ----------------
   buildLine() {
     if (this.stations) this.stations.forEach(s => s.cont.destroy());
+    if (this.slots) this.slots.forEach(s => s.cont.destroy());
     if (this.bufviews) this.bufviews.forEach(b => b.cont.destroy());
     const n = this.recipe.steps.length;
     const x0 = 60, span = (W - 120);
     const xAt = i => n > 1 ? x0 + i*span/(n-1) : W/2;
 
-    // Workstations
+    // Manual buttons (the player's stations) — always tappable, one per step.
     this.stations = this.recipe.steps.map((sid, i) => {
-      const s = STEPS[sid], x = xAt(i), y = LINE_Y, w = 78, h = 92;
+      const s = STEPS[sid], x = xAt(i), y = LINE_Y, w = 78, h = 70;
       const cont = this.add.container(x, y).setDepth(10);
       const bg = this.add.graphics();
-      const emoji = this.add.text(0, -24, s.emoji, { fontSize:'28px' }).setOrigin(0.5);
-      const label = this.add.text(0, 2, s.label, { fontFamily:FONT, fontSize:'12px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5);
-      const face  = this.add.text(0, 22, '', { fontSize:'17px' }).setOrigin(0.5);   // worker emoji when automated
-      const mark  = this.add.text(0, 22, '', { fontFamily:FONT, fontSize:'11px', fontStyle:'800' }).setOrigin(0.5);  // 👆/✓ when manual
-      const ring  = this.add.graphics();   // auto progress
-      const meter = this.add.graphics();   // apprentice mastery
-      cont.add([bg, emoji, label, face, mark, ring, meter]);
-      return { i, sid, x, y, w, h, cont, bg, emoji, label, face, mark, ring, meter };
+      const emoji = this.add.text(0, -16, s.emoji, { fontSize:'26px' }).setOrigin(0.5);
+      const label = this.add.text(0, 9, s.label, { fontFamily:FONT, fontSize:'12px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5);
+      const meter = this.add.graphics();   // apprentice mastery on this step
+      cont.add([bg, emoji, label, meter]);
+      return { i, sid, x, y, w, h, cont, bg, emoji, label, meter };
     });
 
-    // Buffer indicators between consecutive workstations
+    // Helper slots — beneath each button; a worker here automates that step in parallel with the player.
+    this.slots = this.recipe.steps.map((sid, i) => {
+      const x = xAt(i), y = LINE_Y + SLOT_DY, r = 15;
+      const cont = this.add.container(x, y).setDepth(11);
+      const ring = this.add.graphics();    // auto progress
+      const dot  = this.add.circle(0, 0, r, COL.btnOff).setStrokeStyle(2, COL.dim);
+      const face = this.add.text(0, 0, '', { fontSize:'15px' }).setOrigin(0.5);
+      const lbl  = this.add.text(0, r+9, '', { fontFamily:FONT, fontSize:'8px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5);
+      cont.add([ring, dot, face, lbl]);
+      return { i, sid, x, y, r, cont, ring, dot, face, lbl };
+    });
+
+    // Buffer indicators between consecutive steps
     this.bufviews = [];
     for (let k = 0; k < n - 1; k++) {
       const mx = (xAt(k) + xAt(k+1)) / 2, cont = this.add.container(mx, LINE_Y).setDepth(10);
@@ -564,47 +575,45 @@ class Stall extends Phaser.Scene {
     }
   }
 
-  // One workstation's look: automated (worker + ring) or manual (tap / mastery meter).
+  // The player's manual button for step i (always usable, even if a helper also works it).
   refreshStation(i) {
-    const st = this.stations[i], sid = st.sid, w = this.stall.autos[i], tw = this.stall.trainee;
-    const auto = wHas(w, sid);
+    const st = this.stations[i], sid = st.sid, tw = this.stall.trainee;
+    const canDo = this.canPerform(i);
     st.bg.clear();
-    const frame = auto ? COL.blue : this.cfg.accent;
-    st.bg.fillStyle(frame, auto ? 0.16 : 0.10).fillRoundedRect(-st.w/2, -st.h/2, st.w, st.h, 14);
-    st.bg.lineStyle(auto ? 3 : 2.5, frame, 1).strokeRoundedRect(-st.w/2, -st.h/2, st.w, st.h, 14);
-    st.emoji.setAlpha(auto ? 0.4 : 0.9);                 // fade the step glyph when a worker mans it
-    st.face.setText(w ? w.emoji : '');
-    // manual mark + apprentice mastery meter
-    const canDo = !w && this.canPerform(i);
-    st.mark.setText(w ? '' : (wHas(tw, sid) ? '✓' : (canDo ? '👆 tap' : '')))
-           .setColor(hex(wHas(tw, sid) ? COL.green : COL.brown)).setVisible(!w);
-    const mw = st.w - 18, mx = -mw/2, my = st.h/2 - 10;
+    st.bg.fillStyle(this.cfg.accent, canDo ? 0.16 : 0.07).fillRoundedRect(-st.w/2, -st.h/2, st.w, st.h, 12);
+    st.bg.lineStyle(2.5, this.cfg.accent, canDo ? 1 : 0.5).strokeRoundedRect(-st.w/2, -st.h/2, st.w, st.h, 12);
+    // apprentice mastery meter for this step
+    const mw = st.w - 18, mx = -mw/2, my = st.h/2 - 9;
     st.meter.clear();
-    if (!w) {
-      const train = Phaser.Math.Clamp(wTrain(tw, sid), 0, 1);
-      st.meter.fillStyle(COL.cream, tw ? 1 : 0.4).fillRoundedRect(mx, my, mw, 5, 2);
-      if (tw) st.meter.fillStyle(wHas(tw, sid) ? COL.green : COL.amber, 1).fillRoundedRect(mx, my, mw*train, 5, 2);
-    }
+    st.meter.fillStyle(COL.cream, tw ? 1 : 0.35).fillRoundedRect(mx, my, mw, 4, 2);
+    if (tw) { const t = Phaser.Math.Clamp(wTrain(tw, sid), 0, 1); st.meter.fillStyle(wHas(tw, sid) ? COL.green : COL.amber, 1).fillRoundedRect(mx, my, mw*t, 4, 2); }
   }
 
-  // Draw auto progress rings + buffer fill each frame.
+  // The helper slot beneath step i.
+  refreshSlot(i) {
+    const sl = this.slots[i], w = this.stall.autos[i];
+    sl.face.setText(w ? w.emoji : '+');
+    sl.dot.setFillStyle(w ? COL.tan : COL.btnOff).setStrokeStyle(2, w ? COL.blue : COL.dim);
+    sl.lbl.setText(w ? w.name : 'helper').setColor(hex(w ? COL.blue : COL.dim));
+  }
+
+  // Draw helper auto-progress rings + buffer fill each frame.
   drawLine() {
-    this.stations.forEach(st => {
-      st.ring.clear();
-      const it = this.lineItems[st.i];
+    this.slots.forEach(sl => {
+      sl.ring.clear();
+      const it = this.lineItems[sl.i];
       if (!it) return;
-      st.ring.lineStyle(3, COL.blue, 0.9);
-      st.ring.beginPath();
-      st.ring.arc(0, 0, st.h/2 - 4, -Math.PI/2, -Math.PI/2 + Phaser.Math.PI2 * Phaser.Math.Clamp(it.prog,0,1));
-      st.ring.strokePath();
+      sl.ring.lineStyle(3, COL.blue, 0.9);
+      sl.ring.beginPath();
+      sl.ring.arc(0, 0, sl.r + 3, -Math.PI/2, -Math.PI/2 + Phaser.Math.PI2 * Phaser.Math.Clamp(it.prog,0,1));
+      sl.ring.strokePath();
     });
     this.bufviews.forEach(bv => {
-      const cap = this.stall.bufCap, n = this.stall.buf[bv.k];
+      const cap = this.stall.bufCap, cnt = this.stall.buf[bv.k];
       bv.g.clear();
-      const dw = 9, gap = 3, totalW = cap*dw + (cap-1)*gap, x0 = -totalW/2;
+      const dw = 8, gap = 3, totalW = cap*dw + (cap-1)*gap, x0 = -totalW/2;
       for (let j = 0; j < cap; j++) {
-        const filled = j < n;
-        bv.g.fillStyle(filled ? this.cfg.accent : COL.dim, filled ? 1 : 0.3);
+        bv.g.fillStyle(j < cnt ? this.cfg.accent : COL.dim, j < cnt ? 1 : 0.3);
         bv.g.fillRoundedRect(x0 + j*(dw+gap), -5, dw, 10, 2);
       }
     });
@@ -709,6 +718,7 @@ class Stall extends Phaser.Scene {
       this.traineeLbl.setText('+ apprentice ' + HIRE_COST + '💰').setColor(hex(COL.dim));
     }
     this.stations.forEach((_, i) => this.refreshStation(i));
+    this.slots.forEach((_, i) => this.refreshSlot(i));
   }
 
   // ---------------- HUD / hint ----------------
@@ -950,18 +960,28 @@ class Stall extends Phaser.Scene {
       }
       return;
     }
-    // a workstation: automated -> show its worker's profile; manual -> perform one step
+    // a helper slot (beneath a button): deploy a ready apprentice, or show the worker's profile
+    for (const sl of this.slots) {
+      if (Math.abs(px - sl.x) > 24 || Math.abs(py - sl.y) > 24) continue;
+      this.tapSlot(sl.i);
+      return;
+    }
+    // a manual button: the player performs that step by hand (always available)
     for (const st of this.stations) {
       if (!inBox(px, py, st, st.w/2, st.h/2)) continue;
-      this.tapStation(st.i);
+      this.performManual(st.i);
       return;
     }
   }
 
-  tapStation(i) {
+  // Helper slot beneath step i: deploy a mastered apprentice here, or show the worker's profile.
+  tapSlot(i) {
     const w = this.stall.autos[i];
     if (w) { this.flashHint('🤖 ' + w.emoji + ' ' + w.name + '  ·  ' + STEPS[this.recipe.steps[i]].label + '  ·  ⚡' + w.speed + 'x  ·  made ' + w.served); return; }
-    this.performManual(i);   // un-automated step — the player does it (and trains the apprentice)
+    const tw = this.stall.trainee;
+    if (tw && wHas(tw, this.recipe.steps[i])) this.deployTo(i, tw);
+    else this.flashHint('Hire an apprentice & train them on ' + STEPS[this.recipe.steps[i]].label + ', then deploy here 🐾');
+    this.refreshHud(); this.refreshWorkforce(); this.updateStandingHint();
   }
 
   doRestock() {
