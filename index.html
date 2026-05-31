@@ -828,7 +828,8 @@ class Stall extends Phaser.Scene {
   }
 
   // Player taps a manual workstation: perform one cycle + give the apprentice XP.
-  // Each button then cools down (≈ the step's natural time) so it can't be spammed.
+  // Using ANY station then cools down ALL manual stations (each by its own step time)
+  // so the player works one step at a time rather than spamming the line.
   performManual(k) {
     const st = this.stations[k];
     if (st.cd > 0) return;                                // still cooling down
@@ -836,7 +837,7 @@ class Stall extends Phaser.Scene {
     if (!this.outputRoom(k)) { this.flashHint(STEPS[this.recipe.steps[k]].label + ' buffer is full — clear it downstream 👉'); return; }
     this.consumeInput(k);
     this.pushOutput(k, st.x, st.y);
-    st.cd = st.cdMax;                                     // start this button's cooldown
+    this.stations.forEach(s => { s.cd = s.cdMax; });      // global cooldown: every manual station rests
     const w = this.stall.trainee;
     if (w) {                                              // the apprentice gains XP from your work
       const before = wLevel(w);
