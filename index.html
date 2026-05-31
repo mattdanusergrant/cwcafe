@@ -541,9 +541,9 @@ class Stall extends Phaser.Scene {
       const bg = this.add.graphics();
       const emoji = this.add.text(0, -16, s.emoji, { fontSize:'26px' }).setOrigin(0.5);
       const label = this.add.text(0, 9, s.label, { fontFamily:FONT, fontSize:'12px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5);
-      const meter = this.add.graphics();   // apprentice mastery on this step
-      cont.add([bg, emoji, label, meter]);
-      return { i, sid, x, y, w, h, cont, bg, emoji, label, meter };
+      const cdg = this.add.graphics();   // cooldown overlay (after a manual tap)
+      cont.add([bg, emoji, label, cdg]);
+      return { i, sid, x, y, w, h, cont, bg, emoji, label, cdg, cd: 0, cdMax: STEPS[sid].ms };
     });
 
     // Helper slots — beneath each button; a worker here automates that step in parallel with the player.
@@ -603,8 +603,14 @@ class Stall extends Phaser.Scene {
     sl.lbl.setText(w ? w.name : 'helper').setColor(hex(w ? COL.blue : COL.dim));
   }
 
-  // Draw helper auto-progress rings + buffer fill each frame.
+  // Draw helper auto-progress rings + buffer fill + manual cooldowns each frame.
   drawLine() {
+    this.stations.forEach(st => {
+      st.cdg.clear();
+      if (st.cd <= 0) return;
+      const p = st.cd / st.cdMax;                         // 1 just-tapped → 0 ready
+      st.cdg.fillStyle(0x2A211B, 0.32).fillRoundedRect(-st.w/2, -st.h/2, st.w, st.h * p, 12);
+    });
     this.slots.forEach(sl => {
       sl.ring.clear();
       const it = this.lineItems[sl.i];
@@ -821,13 +827,16 @@ class Stall extends Phaser.Scene {
     return -1;
   }
 
-  // Player taps a manual workstation: perform one cycle instantly + give the apprentice XP.
+  // Player taps a manual workstation: perform one cycle + give the apprentice XP.
+  // Each button then cools down (≈ the step's natural time) so it can't be spammed.
   performManual(k) {
+    const st = this.stations[k];
+    if (st.cd > 0) return;                                // still cooling down
     if (!this.inputAvail(k)) { this.flashHint(k === 0 ? 'Out of ' + INGREDIENTS[this.cfg.ingredient].emoji + ' — tap the chip to restock' : 'Nothing waiting — do ' + STEPS[this.recipe.steps[k-1]].label + ' first 👈'); return; }
     if (!this.outputRoom(k)) { this.flashHint(STEPS[this.recipe.steps[k]].label + ' buffer is full — clear it downstream 👉'); return; }
     this.consumeInput(k);
-    const st = this.stations[k];
     this.pushOutput(k, st.x, st.y);
+    st.cd = st.cdMax;                                     // start this button's cooldown
     const w = this.stall.trainee;
     if (w) {                                              // the apprentice gains XP from your work
       const before = wLevel(w);
@@ -1032,6 +1041,7 @@ class Stall extends Phaser.Scene {
   update(time, delta) {
     tickWages(delta);
     tickPassive(delta, this.id);     // other automated stalls keep earning while you're here
+    this.stations.forEach(st => { if (st.cd > 0) st.cd = Math.max(0, st.cd - delta); });   // manual button cooldowns
     this.tickAutoStations(delta);    // staffed workstations advance + move items through buffers
     this.tickCustomers(delta);
     this.checkQuest();
