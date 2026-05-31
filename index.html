@@ -135,12 +135,21 @@ function makeStallState(id) {
 }
 
 // Each helper is an individual with their own profile + per-recipe mastery.
+// They also have a per-station cooldown (rolled the first time they work a given
+// step): 2x–3x the manual cooldown for that step, so helpers are always slower
+// than hand-work and each helper is better/worse at different stations.
 const NAMES  = ['Mochi','Pip','Suki','Bao','Yuki','Coco','Tofu','Miso','Nori','Yam'];
-const SPEEDS = [0.5, 0.6, 0.45, 0.575, 0.65, 0.475, 0.55, 0.625];   // innate throughput multiplier (lower = slower)
+const HELPER_CD_MIN = 2, HELPER_CD_MAX = 3;   // helper station cooldown = manual cooldown x [2..3]
 function makeWorker() {
   const i = G.workerSeq++;
   return { emoji: WORKER_EMOJIS[i % WORKER_EMOJIS.length], name: NAMES[i % NAMES.length],
-           speed: SPEEDS[i % SPEEDS.length], mastery: {}, served: 0 };
+           mastery: {}, cd: {}, served: 0 };
+}
+// A helper's cooldown (ms) for a given station — rolled once per step and cached.
+function wStationCd(w, sid) {
+  if (!w) return Infinity;
+  if (w.cd[sid] == null) w.cd[sid] = STEPS[sid].ms * MANUAL_CD_MULT * (HELPER_CD_MIN + Math.random() * (HELPER_CD_MAX - HELPER_CD_MIN));
+  return w.cd[sid];
 }
 
 const G = {
@@ -193,13 +202,12 @@ const MASTER_DICE_AUTO = 1;   // d6 rolled per helper cycle
 const rollDice = n => { let s = 0; for (let i = 0; i < n; i++) s += 1 + Math.floor(Math.random() * 6); return s; };
 const wMastery   = (w, id) => (w && w.mastery[G.stalls[id].active]) || 0;
 const wTrained   = (w, id) => wMastery(w, id) >= MASTER_MAX;        // mastered the active recipe
-const wSpeed     = w => w.speed;                                    // innate auto-throughput
 // The auto line: a slot runs only if its worker has mastered the ACTIVE recipe;
 // the line produces finished dishes only when EVERY slot is staffed by such a worker.
 const stepReady    = (id, k) => wTrained(G.stalls[id].autos[k], id);
 const lineComplete = id => recipeOf(id).steps.every((sid, k) => stepReady(id, k));
-// A helper's per-item time is the HIGHER of its speed-cycle and the manual cooldown.
-const autoStepMs   = (id, sid, k) => Math.max(STEPS[sid].ms * MANUAL_CD_MULT, STEPS[sid].ms / wSpeed(G.stalls[id].autos[k]));
+// A helper's per-item time is their own cooldown for that station (always >= 2x manual).
+const autoStepMs   = (id, sid, k) => wStationCd(G.stalls[id].autos[k], sid);
 const lineCycle    = id => Math.max(...recipeOf(id).steps.map((sid, k) => autoStepMs(id, sid, k)));  // bottleneck (call only when complete)
 const placedAt     = id => (G.stalls[id].trainee ? 1 : 0) + G.stalls[id].autos.filter(Boolean).length;
 const workersAt    = placedAt;                                 // (kept name; used by the HUD)
@@ -936,8 +944,8 @@ class Stall extends Phaser.Scene {
       if (!it) {                                           // idle — start a new item if possible
         if (this.inputAvail(k) && this.outputRoom(k)) { this.consumeInput(k); this.lineItems[k] = it = { prog: 0 }; }
       }
-      // a helper's cycle respects the HIGHER of its own speed-cycle and the manual cooldown
-      const cyc = Math.max(st.cdMax, STEPS[steps[k]].ms / wSpeed(this.stall.autos[k]));
+      // a helper works this station on their own per-station cooldown (>= 2x manual)
+      const cyc = wStationCd(this.stall.autos[k], steps[k]);
       if (it && it.prog < 1) it.prog = Math.min(1, it.prog + delta / cyc);
     }
     this.drawLine();
@@ -1057,7 +1065,7 @@ class Stall extends Phaser.Scene {
   // Helper slot beneath step i: deploy a mastered apprentice here, or show the worker's profile.
   tapSlot(i) {
     const w = this.stall.autos[i];
-    if (w) { this.flashHint('🤖 ' + w.emoji + ' ' + w.name + '  ·  ' + Math.floor(wMastery(w, this.id)) + '%  ·  ⚡' + wSpeed(w).toFixed(2) + 'x  ·  made ' + w.served); return; }
+    if (w) { const cd = (wStationCd(w, this.recipe.steps[i])/1000).toFixed(1); this.flashHint('🤖 ' + w.emoji + ' ' + w.name + '  ·  ' + STEPS[this.recipe.steps[i]].label + ' every ' + cd + 's  ·  made ' + w.served); return; }
     const tw = this.stall.trainee;
     if (tw && wTrained(tw, this.id)) this.deployTo(i, tw);
     else this.flashHint('Master this recipe (100%) with an apprentice in the slot, then deploy here 🐾');
@@ -1081,7 +1089,7 @@ class Stall extends Phaser.Scene {
       G.coins -= HIRE_COST;
       const w = makeWorker();
       this.stall.trainee = w;
-      this.flashHint('Hired ' + w.emoji + ' ' + w.name + '! Craft by hand to train them (⚡' + w.speed + 'x)');
+      this.flashHint('Hired ' + w.emoji + ' ' + w.name + '! Craft by hand to train them 🐾');
     } else {
       const k = this.deployStep(tw);                      // first open station whose step they've mastered
       if (k >= 0) this.deployTo(k, tw);
