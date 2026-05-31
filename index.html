@@ -431,6 +431,12 @@ const TABS_Y    = 500;                          // recipe selector tabs (dumplin
 const KITCHEN_Y = 536;                          // kitchen caption
 const LINE_Y    = 594;                          // manual buttons (the player's stations)
 const SLOT_DY   = 56;                           // a helper slot sits this far below each button
+// Kitchen floor runs left→right: 📦 Storage feeds the first step, then steps with
+// a vertical "prep tray" pip-stack in each gap. Squished toward the right so
+// Storage has room on the left.
+const STORAGE_X = 50;                            // the Storage station (ingredients live here)
+const STEP_X0   = 130;                           // first step button's x
+const STEP_DX   = 92;                            // spacing between step buttons (tighter than full-width)
 const TRAINEE_Y = 728;                          // apprentice card (bottom)
 const TRAINEE   = { x: W/2, y: TRAINEE_Y };     // apprentice slot
 
@@ -457,7 +463,6 @@ class Stall extends Phaser.Scene {
 
     this.drawRoom();
     this.buildHud();
-    this.buildPantryChip();
     this.buildLine();      // workstations (one per step) + buffers + trainee slot
     this.buildTray();
     this.buildHintPill();
@@ -532,30 +537,28 @@ class Stall extends Phaser.Scene {
     this.add.text(W/2 + 6, 72, this.cfg.emoji + ' ' + this.cfg.name, { fontFamily:FONT, fontSize:'15px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5).setDepth(51);
   }
 
-  // The stall's ingredient chip (top-right of the sub-bar): tap to restock.
-  buildPantryChip() {
-    const x = W - 60, y = 72;
-    this.pantryChip = { x, y, w: 92, h: 34 };
-    this.pantryChip.box = this.add.rectangle(x, y, 92, 34, COL.card).setStrokeStyle(2, COL.dim).setDepth(51);
-    this.pantryChip.txt = this.add.text(x, y-6, '', { fontFamily:FONT, fontSize:'14px', color:hex(COL.brown), fontStyle:'700' }).setOrigin(0.5).setDepth(52);
-    this.pantryChip.cap = this.add.text(x, y+9, '↺ ' + RESTOCK_COST + '💰', { fontFamily:FONT, fontSize:'9px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5).setDepth(52);
-  }
-
-  refreshPantryChip() {
-    const ing = this.cfg.ingredient, stock = G.pantry[ing];
-    let col = COL.brown; if (stock === 0) col = COL.red; else if (stock <= 3) col = COL.amber;
-    this.pantryChip.txt.setText(INGREDIENTS[ing].emoji + ' ' + stock).setColor(hex(col));
-    this.pantryChip.box.setStrokeStyle(2, stock === 0 ? COL.red : COL.dim);
-  }
-
-  // ---------------- Production line: a manual button per step + a helper slot beneath each ----------------
+  // ---------------- Production line: 📦 Storage → step buttons (helper slot beneath each), ----------------
+  //                  with a vertical "prep tray" pip-stack in each between-step gap.
   buildLine() {
     if (this.stations) this.stations.forEach(s => s.cont.destroy());
     if (this.slots) this.slots.forEach(s => s.cont.destroy());
     if (this.bufviews) this.bufviews.forEach(b => b.cont.destroy());
+    if (this.storage) this.storage.cont.destroy();
     const n = this.recipe.steps.length;
-    const x0 = 60, span = (W - 120);
-    const xAt = i => n > 1 ? x0 + i*span/(n-1) : W/2;
+    const xAt = i => STEP_X0 + i*STEP_DX;
+
+    // Storage station — ingredients live here and flow into the first step.
+    {
+      const x = STORAGE_X, y = LINE_Y, w = 64, h = 70;
+      const cont = this.add.container(x, y).setDepth(10);
+      const bg = this.add.graphics();
+      const box = this.add.text(0, -16, '📦', { fontSize:'24px' }).setOrigin(0.5);
+      const stk = this.add.text(0, 9, '', { fontFamily:FONT, fontSize:'12px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5);
+      const cap = this.add.text(0, 24, '↺' + RESTOCK_COST + '💰', { fontFamily:FONT, fontSize:'8px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5);
+      const arrow = this.add.text(w/2 + (STEP_X0 - STORAGE_X - w/2 - 39)/2, -2, '→', { fontFamily:FONT, fontSize:'15px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5);
+      cont.add([bg, box, stk, cap, arrow]);
+      this.storage = { x, y, w, h, cont, bg, stk, cap };
+    }
 
     // Manual buttons (the player's stations) — always tappable, one per step.
     this.stations = this.recipe.steps.map((sid, i) => {
@@ -581,7 +584,7 @@ class Stall extends Phaser.Scene {
       return { i, sid, x, y, r, cont, ring, dot, face, lbl };
     });
 
-    // Buffer indicators sit in the gaps between consecutive button columns
+    // Prep trays — a vertical pip-stack in each between-step gap (holds items mid-craft).
     this.bufviews = [];
     for (let k = 0; k < n - 1; k++) {
       const mx = (xAt(k) + xAt(k+1)) / 2, cont = this.add.container(mx, LINE_Y).setDepth(10);
@@ -653,15 +656,26 @@ class Stall extends Phaser.Scene {
       sl.ring.arc(0, 0, sl.r + 3, -Math.PI/2, -Math.PI/2 + Phaser.Math.PI2 * Phaser.Math.Clamp(it.prog,0,1));
       sl.ring.strokePath();
     });
+    // Prep trays: a vertical pip-stack (newest on top), centered in the gap.
     this.bufviews.forEach(bv => {
       const cap = this.stall.bufCap, cnt = this.stall.buf[bv.k];
       bv.g.clear();
-      const dw = 8, gap = 3, totalW = cap*dw + (cap-1)*gap, x0 = -totalW/2;
+      const dh = 6, gap = 3, pw = 12, totalH = cap*dh + (cap-1)*gap, y0 = totalH/2 - dh;
       for (let j = 0; j < cap; j++) {
         bv.g.fillStyle(j < cnt ? this.cfg.accent : COL.dim, j < cnt ? 1 : 0.3);
-        bv.g.fillRoundedRect(x0 + j*(dw+gap), -5, dw, 10, 2);
+        bv.g.fillRoundedRect(-pw/2, y0 - j*(dh+gap), pw, dh, 2);   // stack upward as it fills
       }
     });
+  }
+
+  // Storage station — shows current stock; tap to restock. Red when empty.
+  refreshStorage() {
+    const ing = this.cfg.ingredient, stock = G.pantry[ing], s = this.storage;
+    let col = COL.brown; if (stock === 0) col = COL.red; else if (stock <= 3) col = COL.amber;
+    s.stk.setText(INGREDIENTS[ing].emoji + stock).setColor(hex(col));
+    s.bg.clear();
+    s.bg.fillStyle(COL.tan, stock === 0 ? 0.10 : 0.18).fillRoundedRect(-s.w/2, -s.h/2, s.w, s.h, 12);
+    s.bg.lineStyle(2.5, stock === 0 ? COL.red : COL.brown, stock === 0 ? 1 : 0.6).strokeRoundedRect(-s.w/2, -s.h/2, s.w, s.h, 12);
   }
 
   // ---------------- Recipe tabs (switch recipe / buy equipment) ----------------
@@ -829,7 +843,7 @@ class Stall extends Phaser.Scene {
 
   refreshAll() {
     this.refreshHud();
-    this.refreshPantryChip();
+    this.refreshStorage();
     this.refreshTray();
     this.refreshWorkforce();
     this.refreshRecipeTabs();
@@ -842,7 +856,7 @@ class Stall extends Phaser.Scene {
   inputAvail(k)  { return k === 0 ? G.pantry[this.cfg.ingredient] > 0 : this.stall.buf[k-1] > 0; }
   outputRoom(k)  { return k === this.recipe.steps.length - 1 ? this.tray.length < TRAY_MAX : this.stall.buf[k] < this.stall.bufCap; }
   canPerform(k)  { return this.inputAvail(k) && this.outputRoom(k); }
-  consumeInput(k){ if (k === 0) { G.pantry[this.cfg.ingredient] -= 1; this.refreshPantryChip(); } else this.stall.buf[k-1] -= 1; }
+  consumeInput(k){ if (k === 0) { G.pantry[this.cfg.ingredient] -= 1; this.refreshStorage(); } else this.stall.buf[k-1] -= 1; }
   // Push step k's output; returns false only if the tray was full at the last step.
   pushOutput(k, fromX, fromY) {
     if (k === this.recipe.steps.length - 1) return this.addDishToTray(fromX, fromY);
@@ -868,8 +882,8 @@ class Stall extends Phaser.Scene {
   performManual(k) {
     const st = this.stations[k];
     if (st.cd > 0) return;                                // still cooling down
-    if (!this.inputAvail(k)) { this.flashHint(k === 0 ? 'Out of ' + INGREDIENTS[this.cfg.ingredient].emoji + ' — tap the chip to restock' : 'Nothing waiting — do ' + STEPS[this.recipe.steps[k-1]].label + ' first 👈'); return; }
-    if (!this.outputRoom(k)) { this.flashHint(STEPS[this.recipe.steps[k]].label + ' buffer is full — clear it downstream 👉'); return; }
+    if (!this.inputAvail(k)) { this.flashHint(k === 0 ? 'Out of ' + INGREDIENTS[this.cfg.ingredient].emoji + ' — tap 📦 Storage to restock' : 'Nothing in the prep tray — do ' + STEPS[this.recipe.steps[k-1]].label + ' first 👈'); return; }
+    if (!this.outputRoom(k)) { this.flashHint(STEPS[this.recipe.steps[k]].label + ' prep tray is full — serve or craft downstream 👉'); return; }
     this.consumeInput(k);
     this.pushOutput(k, st.x, st.y);
     st.cd = st.cdMax;                                     // start this button's own cooldown
@@ -1012,7 +1026,7 @@ class Stall extends Phaser.Scene {
   // ---------------- Input ----------------
   handleTap(px, py) {
     if (hitBtn(px, py, this.backBtn)) { this.scene.start('market'); return; }
-    if (inBox(px, py, this.pantryChip, this.pantryChip.w/2, this.pantryChip.h/2)) { this.doRestock(); return; }
+    if (inBox(px, py, this.storage, this.storage.w/2, this.storage.h/2)) { this.doRestock(); return; }
     // trainee card: hire an apprentice, or (once ready) deploy them to a station
     if (inBox(px, py, this.traineeBox, this.traineeBox.halfW, this.traineeBox.halfH)) { this.tapTrainee(); return; }
     // recipe tabs: select an unlocked recipe, or buy the equipment that unlocks it
@@ -1054,7 +1068,7 @@ class Stall extends Phaser.Scene {
     if (G.coins < RESTOCK_COST) { this.flashHint('Need ' + RESTOCK_COST + ' 💰 to restock'); return; }
     G.coins -= RESTOCK_COST;
     G.pantry[this.cfg.ingredient] += RESTOCK_AMOUNT;
-    this.refreshHud(); this.refreshPantryChip();
+    this.refreshHud(); this.refreshStorage();
     this.flashHint('Restocked ' + INGREDIENTS[this.cfg.ingredient].emoji + ' +' + RESTOCK_AMOUNT);
   }
 
