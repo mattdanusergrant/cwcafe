@@ -430,6 +430,11 @@ class Stall extends Phaser.Scene {
     this.cfg = STALLS[this.id];
     this.recipe = recipeOf(this.id);
     this.stall = G.stalls[this.id];
+    // Phaser reuses the scene instance across visits but destroys its GameObjects on
+    // shutdown — so null out persistent-once refs here, or buildLine's guard would
+    // skip rebuilding the (now-dead) trainee UI and crash on re-entry.
+    this.traineeDot = null;
+    this.stations = null; this.slots = null; this.bufviews = null;
 
     this.tray = [];        // finished-dish tokens waiting on the pickup tray
     this.lineItems = this.stall.autos.map(() => null);   // per-workstation in-progress AUTO item ({prog}) or null
