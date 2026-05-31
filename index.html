@@ -140,7 +140,7 @@ const SPEEDS = [1.0, 1.2, 0.9, 1.15, 1.3, 0.95, 1.1, 1.25];   // innate throughp
 function makeWorker() {
   const i = G.workerSeq++;
   return { emoji: WORKER_EMOJIS[i % WORKER_EMOJIS.length], name: NAMES[i % NAMES.length],
-           speed: SPEEDS[i % SPEEDS.length], xp: 0, level: 0, served: 0 };
+           speed: SPEEDS[i % SPEEDS.length], mastery: {}, served: 0 };
 }
 
 const G = {
@@ -163,8 +163,8 @@ const QUESTS = [
     prog:()=>({ n:Math.min(G.stats.handMade,3), of:3 }), done:()=>G.stats.handMade >= 3 },
   { text:'Hire your first apprentice', reward:60, emoji:'🐾',
     done:()=>G.workerSeq > 0 },
-  { text:'Train an apprentice to Lv 1', reward:80, emoji:'🎓',
-    done:()=>STALL_ORDER.some(id => wTrained(G.stalls[id].trainee) || G.stalls[id].autos.some(Boolean)) },
+  { text:'Master a recipe (100%)', reward:80, emoji:'🎓',
+    done:()=>STALL_ORDER.some(id => wTrained(G.stalls[id].trainee, id) || G.stalls[id].autos.some(Boolean)) },
   { text:'Staff a line station with a helper', reward:120, emoji:'🤖',
     done:()=>STALL_ORDER.some(id => G.stalls[id].autos.some(Boolean)) },
   { text:'Open the boba stall', reward:150, emoji:'🧋',
@@ -343,7 +343,7 @@ class Market extends Phaser.Scene {
           const staffed = s.autos.filter(Boolean).length;
           txt = '🛠️ Line ' + staffed + '/' + r.steps.length + ' staffed — fill every station\nServed ' + s.served;
         } else if (s.trainee) {
-          txt = '👩‍🍳 Training ' + s.trainee.name + ' · Lv ' + wLevel(s.trainee) + '\nServed ' + s.served;
+          txt = '👩‍🍳 Training ' + s.trainee.name + ' · ' + Math.floor(wMastery(s.trainee, c.id)) + '%\nServed ' + s.served;
         } else {
           txt = (s.served > 0 ? 'Served ' + s.served + '  ·  ' : '') + 'Cook by hand 👆 to earn\nHire an apprentice to automate';
         }
@@ -729,7 +729,7 @@ class Stall extends Phaser.Scene {
       const ready = wTrained(tw);
       this.traineeDot.setFillStyle(COL.tan);
       this.traineeFace.setText(tw.emoji);
-      this.traineeLbl.setText(tw.name + '  Lv ' + wLevel(tw) + (ready ? ' ✓ tap to deploy' : '')).setColor(hex(ready ? COL.green : COL.dim));
+      this.traineeLbl.setText(tw.name + '  ' + Math.floor(wMastery(tw, this.id)) + '%' + (ready ? ' ✓ deploy' : '')).setColor(hex(ready ? COL.green : COL.dim));
     } else {
       this.traineeDot.setFillStyle(COL.btnOff);
       this.traineeFace.setText('');
@@ -874,7 +874,7 @@ class Stall extends Phaser.Scene {
   // high→low so a freed buffer slot isn't double-filled in one frame.
   tickAutoStations(delta) {
     const steps = this.recipe.steps;
-    const ready = k => wTrained(this.stall.autos[k]);
+    const ready = k => wTrained(this.stall.autos[k], this.id);
     for (let k = steps.length - 1; k >= 0; k--) {
       if (!ready(k)) continue;
       const st = this.stations[k];
