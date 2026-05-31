@@ -134,7 +134,7 @@ function makeStallState(id) {
   };
 }
 
-// Each helper is an individual with their own profile + XP/level.
+// Each helper is an individual with their own profile + per-recipe mastery.
 const NAMES  = ['Mochi','Pip','Suki','Bao','Yuki','Coco','Tofu','Miso','Nori','Yam'];
 const SPEEDS = [1.0, 1.2, 0.9, 1.15, 1.3, 0.95, 1.1, 1.25];   // innate throughput multiplier
 function makeWorker() {
@@ -182,16 +182,17 @@ function tryCompleteQuest() {
 
 const recipeOf  = id => RECIPES[G.stalls[id].active];          // the stall's *active* recipe
 const cycleMs   = id => recipeOf(id).steps.reduce((a, sid) => a + STEPS[sid].ms, 0);
-// Each helper levels up from XP. A helper is "trained" (deployable, can work any
-// station) once they reach level 1; higher levels make them faster.
-const LEVEL_XP   = 50;        // XP per level
-const XP_PER_STEP = 10;       // XP an apprentice gains per step you hand-craft
-const wLevel     = w => w ? Math.floor(w.xp / LEVEL_XP) : 0;
-const wTrained   = w => wLevel(w) >= 1;
-const wSpeed     = w => w.speed * (1 + 0.15 * (wLevel(w) - 1));   // innate speed boosted by level
-// The auto line: station k runs if its slot holds a trained worker; the line
-// produces finished dishes only when EVERY slot is staffed by a trained worker.
-const stepReady    = (id, k) => wTrained(G.stalls[id].autos[k]);
+// Each helper has a 0-100 mastery meter PER RECIPE. Hand-crafting while they're in
+// the apprentice slot raises the active recipe's meter; at 100 they've mastered it
+// and can be deployed to a slot to run that recipe hands-free.
+const MASTER_MAX     = 100;
+const MASTER_PER_TAP = 5;     // mastery gained per manual step performed (apprentice in slot)
+const wMastery   = (w, id) => (w && w.mastery[G.stalls[id].active]) || 0;
+const wTrained   = (w, id) => wMastery(w, id) >= MASTER_MAX;        // mastered the active recipe
+const wSpeed     = w => w.speed;                                    // innate auto-throughput
+// The auto line: a slot runs only if its worker has mastered the ACTIVE recipe;
+// the line produces finished dishes only when EVERY slot is staffed by such a worker.
+const stepReady    = (id, k) => wTrained(G.stalls[id].autos[k], id);
 const lineComplete = id => recipeOf(id).steps.every((sid, k) => stepReady(id, k));
 const lineCycle    = id => Math.max(...recipeOf(id).steps.map((sid, k) => STEPS[sid].ms / wSpeed(G.stalls[id].autos[k])));  // bottleneck (call only when complete)
 const placedAt     = id => (G.stalls[id].trainee ? 1 : 0) + G.stalls[id].autos.filter(Boolean).length;
@@ -573,23 +574,23 @@ class Stall extends Phaser.Scene {
       this.bufviews.push({ k, cont, g });
     }
 
-    // Trainee slot (apprentice) — gains XP from your hand-crafting and levels up.
+    // Trainee slot (apprentice) — masters the active recipe as you hand-craft.
     if (!this.traineeDot) {
       this.add.text(TRAINEE.x - 60, TRAINEE.y, '🎓', { fontSize:'15px' }).setOrigin(0.5).setDepth(11).setAlpha(0.6);
       this.traineeDot  = this.add.circle(TRAINEE.x, TRAINEE.y, 18, COL.btnOff).setStrokeStyle(2, this.cfg.accent).setDepth(11);
       this.traineeFace = this.add.text(TRAINEE.x, TRAINEE.y, '', { fontSize:'20px' }).setOrigin(0.5).setDepth(12);
       this.traineeLbl  = this.add.text(TRAINEE.x + 30, TRAINEE.y - 8, '', { fontFamily:FONT, fontSize:'10px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0, 0.5).setDepth(12);
-      this.traineeXp   = this.add.graphics().setDepth(12);   // XP-to-next-level bar
+      this.traineeXp   = this.add.graphics().setDepth(12);   // mastery meter for the active recipe
     }
   }
 
-  // Draw the apprentice's XP bar (progress within the current level).
+  // Draw the apprentice's 0-100 mastery meter for the stall's active recipe.
   drawTraineeXp() {
     const g = this.traineeXp; g.clear();
     const tw = this.stall.trainee;
     const bx = TRAINEE.x + 30, by = TRAINEE.y + 6, bw = 84, bh = 7;
     g.fillStyle(COL.cream, tw ? 1 : 0.35).fillRoundedRect(bx, by, bw, bh, 3);
-    if (tw) { const p = (tw.xp % LEVEL_XP) / LEVEL_XP; g.fillStyle(wTrained(tw) ? COL.green : COL.amber, 1).fillRoundedRect(bx, by, bw*p, bh, 3); }
+    if (tw) { const p = wMastery(tw, this.id) / MASTER_MAX; g.fillStyle(wTrained(tw, this.id) ? COL.green : COL.amber, 1).fillRoundedRect(bx, by, bw*p, bh, 3); }
   }
 
   // The player's manual button for step i (always usable, even if a helper also works it).
@@ -726,7 +727,7 @@ class Stall extends Phaser.Scene {
   refreshWorkforce() {
     const tw = this.stall.trainee;
     if (tw) {
-      const ready = wTrained(tw);
+      const ready = wTrained(tw, this.id);
       this.traineeDot.setFillStyle(COL.tan);
       this.traineeFace.setText(tw.emoji);
       this.traineeLbl.setText(tw.name + '  ' + Math.floor(wMastery(tw, this.id)) + '%' + (ready ? ' ✓ deploy' : '')).setColor(hex(ready ? COL.green : COL.dim));
@@ -784,10 +785,10 @@ class Stall extends Phaser.Scene {
       this.setHint('👆 Tap ' + first.emoji + ' ' + first.label + ', then the rest, to make a ' + this.recipe.emoji + ' by hand');
     else if (!w && placedAt(this.id) === 0 && G.coins < HIRE_COST)
       this.setHint('Sell a few by hand, then hire an apprentice 🐾 (' + HIRE_COST + '💰) to train');
-    else if (w && wTrained(w))
-      this.setHint('🎓 ' + w.name + ' is Lv ' + wLevel(w) + ' — tap a helper slot to deploy them (or train higher = faster) 🤖');
+    else if (w && wTrained(w, this.id))
+      this.setHint('🎓 ' + w.name + ' has mastered this recipe — tap a helper slot to deploy them 🤖');
     else if (w)
-      this.setHint('Tap any step to give ' + w.name + ' XP — reach Lv 1 to deploy them 🐾');
+      this.setHint('Tap any step to raise ' + w.name + '’s mastery — reach 100% to deploy them 🐾');
     else if (isAutomated(this.id) && panBuyable && G.coins >= u.cost)
       this.setHint('Buy the ' + u.equip + ' to unlock ' + RECIPES[u.recipe].name + ' ' + RECIPES[u.recipe].emoji + '!');
     else if (isAutomated(this.id))
@@ -795,7 +796,7 @@ class Stall extends Phaser.Scene {
     else if (staffed > 0)
       this.setHint('Line ' + staffed + '/' + n + ' automated — tap the rest by hand, or train helpers for them 🤖');
     else
-      this.setHint('Hire an apprentice 🐾 — give them XP by hand-crafting, then deploy them');
+      this.setHint('Hire an apprentice 🐾 — master the recipe by hand-crafting, then deploy them');
   }
 
   refreshAll() {
@@ -826,14 +827,14 @@ class Stall extends Phaser.Scene {
       if (!this.stall.autos[k] && this.canPerform(k)) return k;
     return -1;
   }
-  // First un-automated station whose step the worker has mastered (for deploy), or -1.
-  deployStep(w) {                          // first open slot a trained worker can take (any step)
-    if (!wTrained(w)) return -1;
+  // First open slot a mastered worker can take (any step of the active recipe), or -1.
+  deployStep(w) {
+    if (!wTrained(w, this.id)) return -1;
     for (let k = 0; k < this.recipe.steps.length; k++) if (!this.stall.autos[k]) return k;
     return -1;
   }
 
-  // Player taps a manual workstation: perform one cycle + give the apprentice XP.
+  // Player taps a manual workstation: perform one cycle + raise the apprentice's mastery.
   // Each button then cools down (a bit longer than the step's natural time) so it
   // can't be spammed; other stations stay independent, so you juggle the line.
   performManual(k) {
@@ -845,13 +846,14 @@ class Stall extends Phaser.Scene {
     this.pushOutput(k, st.x, st.y);
     st.cd = st.cdMax;                                     // start this button's own cooldown
     const w = this.stall.trainee;
-    if (w) {                                              // the apprentice gains XP from your work
-      const before = wLevel(w);
-      w.xp += XP_PER_STEP;
-      const after = wLevel(w);
-      if (after > before) {
-        this.floatText(TRAINEE.x, TRAINEE.y - 26, '⭐ Lv ' + after + '!', COL.green);
-        if (after === 1) this.flashHint('🎓 ' + w.name + ' reached Lv 1 — tap them to deploy to a station', 2400);
+    if (w) {                                              // the apprentice masters the active recipe
+      const key = this.stall.active, before = wMastery(w, this.id);
+      if (before < MASTER_MAX) {
+        w.mastery[key] = Math.min(MASTER_MAX, before + MASTER_PER_TAP);
+        if (w.mastery[key] >= MASTER_MAX) {
+          this.floatText(TRAINEE.x, TRAINEE.y - 26, '⭐ Mastered!', COL.green);
+          this.flashHint('🎓 ' + w.name + ' mastered ' + this.recipe.name + ' — tap a slot to deploy them', 2400);
+        }
       }
     }
     if (k === this.recipe.steps.length - 1) G.stats.handMade += 1;   // a hand-finished dish (for the quest)
@@ -1002,10 +1004,10 @@ class Stall extends Phaser.Scene {
   // Helper slot beneath step i: deploy a mastered apprentice here, or show the worker's profile.
   tapSlot(i) {
     const w = this.stall.autos[i];
-    if (w) { this.flashHint('🤖 ' + w.emoji + ' ' + w.name + '  ·  Lv ' + wLevel(w) + '  ·  ⚡' + wSpeed(w).toFixed(2) + 'x  ·  made ' + w.served); return; }
+    if (w) { this.flashHint('🤖 ' + w.emoji + ' ' + w.name + '  ·  ' + Math.floor(wMastery(w, this.id)) + '%  ·  ⚡' + wSpeed(w).toFixed(2) + 'x  ·  made ' + w.served); return; }
     const tw = this.stall.trainee;
-    if (tw && wTrained(tw)) this.deployTo(i, tw);
-    else this.flashHint('Train an apprentice to Lv 1 (hand-craft with them in the slot), then deploy here 🐾');
+    if (tw && wTrained(tw, this.id)) this.deployTo(i, tw);
+    else this.flashHint('Master this recipe (100%) with an apprentice in the slot, then deploy here 🐾');
     this.refreshHud(); this.refreshWorkforce(); this.updateStandingHint();
   }
 
