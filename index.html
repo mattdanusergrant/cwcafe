@@ -419,15 +419,20 @@ class Market extends Phaser.Scene {
 /* ============================================================================
    STALL SCENE — the cooking floor for one stall
    ========================================================================== */
-const TRAINEE_Y = 150;   // apprentice slot (top, centered)
-const LINE_Y    = 250;   // the production line: one manual button per step, buffers between
-const SLOT_DY   = 50;    // a helper slot sits this far beneath each manual button
-const TABS_Y    = 322;   // recipe selector tabs (dumpling only)
-const TRAY_Y    = 374;   // finished dishes line the pickup tray
-const COUNTER_Y = 416;   // the serving counter band
-const QUEUE_Y   = [498, 556, 614, 672];   // front of line → back toward the door
-const DOOR      = { x: W/2, y: 828 };
-const TRAINEE   = { x: W/2, y: TRAINEE_Y };   // apprentice slot
+// Layout flows top → bottom: customers enter at the TOP and queue down to the
+// counter; the kitchen (the player's stations) sits at the BOTTOM, and finished
+// dishes travel upward from the kitchen across the counter to the guests.
+const DOOR      = { x: W/2, y: 104 };          // customers enter from the top
+const QUEUE_Y   = [388, 320, 252, 184];        // front of line (by the counter) → back (by the door)
+const QUEUE_DX  = [0, 64, 0, -64];             // stagger left/right so neighbours don't overlap
+const COUNTER_Y = 424;                          // serving counter band — guests above, kitchen below
+const TRAY_Y    = 458;                          // pickup pass: finished dishes wait here to be served up
+const TABS_Y    = 500;                          // recipe selector tabs (dumpling only)
+const KITCHEN_Y = 536;                          // kitchen caption
+const LINE_Y    = 594;                          // manual buttons (the player's stations)
+const SLOT_DY   = 56;                           // a helper slot sits this far below each button
+const TRAINEE_Y = 728;                          // apprentice card (bottom)
+const TRAINEE   = { x: W/2, y: TRAINEE_Y };     // apprentice slot
 
 class Stall extends Phaser.Scene {
   constructor() { super('stall'); }
@@ -469,9 +474,9 @@ class Stall extends Phaser.Scene {
   highlightTarget(time) {
     if (time < this.guideBackUntil) return { x:this.backBtn.x, y:this.backBtn.y, w:this.backBtn.w+10, h:this.backBtn.h+10 };
     if (!G.taughtAutomate) {                                  // teach the core loop on the first stall only
-      const w = this.stall.trainee;
-      if (w && this.deployStep(w) >= 0) return { x:TRAINEE.x, y:TRAINEE.y, r:22 };  // a ready apprentice to deploy
-      if (!w && G.coins >= HIRE_COST) return { x:TRAINEE.x, y:TRAINEE.y, r:22 };    // hire an apprentice
+      const b = this.traineeBox, w = this.stall.trainee;
+      if (w && this.deployStep(w) >= 0) return { x:b.x, y:b.y, w:b.halfW*2+8, h:b.halfH*2+8 };  // deploy a ready apprentice
+      if (!w && G.coins >= HIRE_COST) return { x:b.x, y:b.y, w:b.halfW*2+8, h:b.halfH*2+8 };     // hire an apprentice
       const k = this.firstTappableStep();                    // otherwise nudge a step you can perform by hand
       if (k >= 0) { const st = this.stations[k]; return { x:st.x, y:st.y, w:st.w+8, h:st.h+8 }; }
     } else if (!G.taughtPan) {                               // one-time nudge toward the pan unlock
@@ -503,12 +508,17 @@ class Stall extends Phaser.Scene {
         const alt = (Math.floor(xx/t) + Math.floor(yy/t)) % 2 === 0;
         g.fillStyle(alt ? COL.floor : COL.floorAlt, 1).fillRect(xx, yy, t, t);
       }
+    // walls top & bottom; the customer door is now at the TOP
     g.fillStyle(COL.wall, 1);
     g.fillRect(0, 96, W, 8);
     g.fillRect(0, H-8, W, 8);
-    g.fillStyle(COL.floor, 1).fillRect(DOOR.x-38, H-8, 76, 8);                       // doorway
-    g.fillStyle(COL.counter, 1).fillRoundedRect(20, COUNTER_Y-13, W-40, 26, 8);      // serving counter
-    this.add.text(W/2, COUNTER_Y+24, 'waiting line', { fontFamily:FONT, fontSize:'11px', color:hex(COL.dim) }).setOrigin(0.5).setDepth(2);
+    g.fillStyle(COL.floor, 1).fillRect(DOOR.x-38, 96, 76, 8);                        // doorway (top)
+    g.fillStyle(COL.tan, 0.5).fillRoundedRect(DOOR.x-40, 108, 80, 16, 6);            // entry mat
+    // serving counter divides the dining area (above) from the kitchen (below)
+    g.fillStyle(COL.counter, 1).fillRoundedRect(16, COUNTER_Y-13, W-32, 26, 9);
+    g.fillStyle(0xFFFFFF, 0.12).fillRoundedRect(16, COUNTER_Y-13, W-32, 9, 9);       // counter highlight
+    this.add.text(24, 132, '🚪 guests', { fontFamily:FONT, fontSize:'11px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0,0.5).setDepth(2);
+    this.kitchenCaption = this.add.text(W/2, KITCHEN_Y, '', { fontFamily:FONT, fontSize:'11px', color:hex(COL.dim), fontStyle:'800' }).setOrigin(0.5).setDepth(2);
   }
 
   buildHud() {
@@ -571,7 +581,7 @@ class Stall extends Phaser.Scene {
       return { i, sid, x, y, r, cont, ring, dot, face, lbl };
     });
 
-    // Buffer indicators between consecutive steps
+    // Buffer indicators sit in the gaps between consecutive button columns
     this.bufviews = [];
     for (let k = 0; k < n - 1; k++) {
       const mx = (xAt(k) + xAt(k+1)) / 2, cont = this.add.container(mx, LINE_Y).setDepth(10);
@@ -580,23 +590,33 @@ class Stall extends Phaser.Scene {
       this.bufviews.push({ k, cont, g });
     }
 
-    // Trainee slot (apprentice) — masters the active recipe as you hand-craft.
+    if (this.kitchenCaption) this.kitchenCaption.setText('— 🍳 KITCHEN —');
+
+    // Trainee card (apprentice) at the bottom — masters the active recipe as you hand-craft.
     if (!this.traineeDot) {
-      this.add.text(TRAINEE.x - 60, TRAINEE.y, '🎓', { fontSize:'15px' }).setOrigin(0.5).setDepth(11).setAlpha(0.6);
-      this.traineeDot  = this.add.circle(TRAINEE.x, TRAINEE.y, 18, COL.btnOff).setStrokeStyle(2, this.cfg.accent).setDepth(11);
-      this.traineeFace = this.add.text(TRAINEE.x, TRAINEE.y, '', { fontSize:'20px' }).setOrigin(0.5).setDepth(12);
-      this.traineeLbl  = this.add.text(TRAINEE.x + 30, TRAINEE.y - 8, '', { fontFamily:FONT, fontSize:'10px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0, 0.5).setDepth(12);
-      this.traineeXp   = this.add.graphics().setDepth(12);   // mastery meter for the active recipe
+      const cw = 300, ch = 60, cx = TRAINEE.x, cy = TRAINEE.y;
+      this.traineeBox = { x: cx, y: cy, halfW: cw/2, halfH: ch/2 };
+      this.traineeCard = this.add.graphics().setDepth(10);
+      const ax = cx - cw/2 + 32;                                   // avatar at the card's left
+      this.traineeDot  = this.add.circle(ax, cy, 19, COL.btnOff).setStrokeStyle(2, this.cfg.accent).setDepth(11);
+      this.traineeFace = this.add.text(ax, cy, '', { fontSize:'21px' }).setOrigin(0.5).setDepth(12);
+      this.traineeTag  = this.add.text(ax, cy + 30, '🎓 apprentice', { fontFamily:FONT, fontSize:'8px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5).setDepth(12);
+      this.traineeLbl  = this.add.text(ax + 34, cy - 12, '', { fontFamily:FONT, fontSize:'12px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0, 0.5).setDepth(12);
+      this.traineeXpX  = ax + 34; this.traineeXpW = cw/2 + 56;     // mastery bar geometry
+      this.traineeXp   = this.add.graphics().setDepth(12);
     }
   }
 
-  // Draw the apprentice's 0-100 mastery meter for the stall's active recipe.
+  // Draw the trainee card background + the apprentice's 0-100 mastery meter.
   drawTraineeXp() {
+    const tw = this.stall.trainee, b = this.traineeBox;
+    this.traineeCard.clear();
+    this.traineeCard.fillStyle(COL.card, 0.96).fillRoundedRect(b.x-b.halfW, b.y-b.halfH, b.halfW*2, b.halfH*2, 14);
+    this.traineeCard.lineStyle(2, tw ? this.cfg.accent : COL.dim, tw ? 1 : 0.6).strokeRoundedRect(b.x-b.halfW, b.y-b.halfH, b.halfW*2, b.halfH*2, 14);
     const g = this.traineeXp; g.clear();
-    const tw = this.stall.trainee;
-    const bx = TRAINEE.x + 30, by = TRAINEE.y + 6, bw = 84, bh = 7;
-    g.fillStyle(COL.cream, tw ? 1 : 0.35).fillRoundedRect(bx, by, bw, bh, 3);
-    if (tw) { const p = wMastery(tw, this.id) / MASTER_MAX; g.fillStyle(wTrained(tw, this.id) ? COL.green : COL.amber, 1).fillRoundedRect(bx, by, bw*p, bh, 3); }
+    const bx = this.traineeXpX, by = b.y + 6, bw = this.traineeXpW, bh = 8;
+    g.fillStyle(COL.cream, tw ? 1 : 0.4).fillRoundedRect(bx, by, bw, bh, 4);
+    if (tw) { const p = wMastery(tw, this.id) / MASTER_MAX; g.fillStyle(wTrained(tw, this.id) ? COL.green : COL.amber, 1).fillRoundedRect(bx, by, bw*p, bh, 4); }
   }
 
   // The player's manual button for step i (always usable, even if a helper also works it).
@@ -736,11 +756,13 @@ class Stall extends Phaser.Scene {
       const ready = wTrained(tw, this.id);
       this.traineeDot.setFillStyle(COL.tan);
       this.traineeFace.setText(tw.emoji);
-      this.traineeLbl.setText(tw.name + '  ' + Math.floor(wMastery(tw, this.id)) + '%' + (ready ? ' ✓ deploy' : '')).setColor(hex(ready ? COL.green : COL.dim));
+      this.traineeTag.setText('🎓 apprentice');
+      this.traineeLbl.setText(tw.name + '  ·  ' + Math.floor(wMastery(tw, this.id)) + '%' + (ready ? '  ✓ tap to deploy' : '')).setColor(hex(ready ? COL.green : COL.brown));
     } else {
       this.traineeDot.setFillStyle(COL.btnOff);
-      this.traineeFace.setText('');
-      this.traineeLbl.setText('+ apprentice ' + HIRE_COST + '💰').setColor(hex(COL.dim));
+      this.traineeFace.setText('＋');
+      this.traineeTag.setText('empty');
+      this.traineeLbl.setText('Hire apprentice  ·  ' + HIRE_COST + '💰').setColor(hex(G.coins >= HIRE_COST ? COL.brown : COL.dim));
     }
     this.drawTraineeXp();
     this.stations.forEach((_, i) => this.refreshStation(i));
@@ -866,9 +888,9 @@ class Stall extends Phaser.Scene {
     const key = this.stall.active, before = wMastery(w, this.id);
     if (before >= MASTER_MAX) return;
     w.mastery[key] = Math.min(MASTER_MAX, before + amount);
-    this.floatText(TRAINEE.x + 70, TRAINEE.y - 16, '+' + amount, COL.amber);   // show the roll
+    this.floatText(TRAINEE.x + 110, TRAINEE.y - 30, '+' + amount, COL.amber);   // show the roll
     if (w.mastery[key] >= MASTER_MAX) {
-      this.floatText(TRAINEE.x, TRAINEE.y - 26, '⭐ Mastered!', COL.green);
+      this.floatText(TRAINEE.x, TRAINEE.y - 38, '⭐ Mastered!', COL.green);
       this.flashHint('🎓 ' + w.name + ' mastered ' + this.recipe.name + ' — tap a slot to deploy them', 2400);
     }
   }
@@ -912,26 +934,28 @@ class Stall extends Phaser.Scene {
     if (this.customers.length >= QUEUE_MAX) return;
     const idx = this.customers.length;
     const cont = this.add.container(DOOR.x, DOOR.y).setDepth(20);
-    cont.add(this.add.circle(0, 0, 22, COL.card).setStrokeStyle(3, COL.dim));
-    cont.add(this.add.text(0, 0, '🙂', { fontSize:'22px' }).setOrigin(0.5));
-    cont.add(this.add.circle(0, -42, 16, COL.cream).setStrokeStyle(2, COL.dim));
-    const bubble = this.add.text(0, -42, this.recipe.emoji, { fontSize:'18px' }).setOrigin(0.5);
+    cont.add(this.add.circle(0, 0, 21, COL.card).setStrokeStyle(3, COL.dim));
+    cont.add(this.add.text(0, 0, '🙂', { fontSize:'21px' }).setOrigin(0.5));
+    // order bubble tucked to the upper-right of the guest's head
+    cont.add(this.add.circle(22, -16, 13, COL.cream).setStrokeStyle(2, COL.dim));
+    const bubble = this.add.text(22, -16, this.recipe.emoji, { fontSize:'15px' }).setOrigin(0.5);
     const patBar = this.add.graphics();
     cont.add([bubble, patBar]);
     const cu = { cont, bubble, patBar, patience: PATIENCE_MS, state:'walking' };
     this.customers.push(cu);
-    this.tweens.add({ targets: cont, x: QUEUE_X(), y: QUEUE_Y[idx], duration: 700, ease:'Sine.InOut', onComplete: () => { if (cu.state === 'walking') cu.state = 'waiting'; } });
+    this.tweens.add({ targets: cont, x: queueX(idx), y: QUEUE_Y[idx], duration: 700, ease:'Sine.InOut', onComplete: () => { if (cu.state === 'walking') cu.state = 'waiting'; } });
   }
 
   layoutQueue() {
     this.customers.forEach((cu, i) => {
       if (cu.state === 'leaving') return;
-      this.tweens.add({ targets: cu.cont, x: QUEUE_X(), y: QUEUE_Y[Math.min(i, QUEUE_Y.length-1)], duration: 250, ease:'Sine.Out' });
+      const j = Math.min(i, QUEUE_Y.length-1);
+      this.tweens.add({ targets: cu.cont, x: queueX(j), y: QUEUE_Y[j], duration: 250, ease:'Sine.Out' });
     });
   }
 
   drawPatience(cu) {
-    const bw = 42, bh = 6, bx = -bw/2, by = -24;
+    const bw = 40, bh = 6, bx = -bw/2, by = 26;   // just under the guest
     const p = cu.patience / PATIENCE_MS;
     let c = COL.green; if (p < 0.5) c = COL.tan; if (p < 0.25) c = COL.red;
     cu.patBar.clear();
@@ -989,8 +1013,8 @@ class Stall extends Phaser.Scene {
   handleTap(px, py) {
     if (hitBtn(px, py, this.backBtn)) { this.scene.start('market'); return; }
     if (inBox(px, py, this.pantryChip, this.pantryChip.w/2, this.pantryChip.h/2)) { this.doRestock(); return; }
-    // trainee slot: hire an apprentice, or (once ready) deploy them to a station
-    if (inBox(px, py, TRAINEE, 24, 24)) { this.tapTrainee(); return; }
+    // trainee card: hire an apprentice, or (once ready) deploy them to a station
+    if (inBox(px, py, this.traineeBox, this.traineeBox.halfW, this.traineeBox.halfH)) { this.tapTrainee(); return; }
     // recipe tabs: select an unlocked recipe, or buy the equipment that unlocks it
     for (const tab of this.recipeTabs) {
       if (!inBox(px, py, tab, tab.w/2, tab.h/2)) continue;
@@ -1094,7 +1118,7 @@ class Stall extends Phaser.Scene {
     this.wasAutomated = now;
   }
 }
-function QUEUE_X() { return W/2; }
+function queueX(i) { return W/2 + (QUEUE_DX[i] || 0); }
 
 new Phaser.Game({
   type: Phaser.AUTO,
