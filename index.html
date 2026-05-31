@@ -186,8 +186,11 @@ const cycleMs   = id => recipeOf(id).steps.reduce((a, sid) => a + STEPS[sid].ms,
 // the apprentice slot raises the active recipe's meter; at 100 they've mastered it
 // and can be deployed to a slot to run that recipe hands-free.
 const MASTER_MAX     = 100;
-const MASTER_PER_TAP  = 5;    // mastery the slot apprentice gains when the PLAYER works a station
-const MASTER_PER_AUTO = 2;    // mastery the slot apprentice gains when a HELPER works a station (learn by watching)
+// Mastery is rolled with dice: 2d6 when the PLAYER works a station, 1d6 when a
+// deployed HELPER does (learn by watching, slower on average).
+const MASTER_DICE_TAP  = 2;   // d6 rolled per manual tap
+const MASTER_DICE_AUTO = 1;   // d6 rolled per helper cycle
+const rollDice = n => { let s = 0; for (let i = 0; i < n; i++) s += 1 + Math.floor(Math.random() * 6); return s; };
 const wMastery   = (w, id) => (w && w.mastery[G.stalls[id].active]) || 0;
 const wTrained   = (w, id) => wMastery(w, id) >= MASTER_MAX;        // mastered the active recipe
 const wSpeed     = w => w.speed;                                    // innate auto-throughput
@@ -848,7 +851,7 @@ class Stall extends Phaser.Scene {
     this.consumeInput(k);
     this.pushOutput(k, st.x, st.y);
     st.cd = st.cdMax;                                     // start this button's own cooldown
-    this.gainMastery(MASTER_PER_TAP);                     // the slot apprentice learns from your work
+    this.gainMastery(rollDice(MASTER_DICE_TAP));          // the slot apprentice learns from your work (2d6)
     if (k === this.recipe.steps.length - 1) G.stats.handMade += 1;   // a hand-finished dish (for the quest)
     if (!G.firstCookDone) { G.firstCookDone = true; this.flashHint('Nice — a ' + this.recipe.emoji + '! Sell a few, then hire an apprentice 🐾 to train', 2600); }
     this.refreshWorkforce(); this.refreshHud();
@@ -890,7 +893,7 @@ class Stall extends Phaser.Scene {
       let it = this.lineItems[k];
       if (it && it.prog >= 1) {                            // finished — push output if there's room
         if (this.outputRoom(k)) { this.pushOutput(k, st.x, st.y); this.stall.autos[k].served += 1; this.lineItems[k] = it = null;
-                                  this.gainMastery(MASTER_PER_AUTO); }   // slot apprentice learns by watching
+                                  this.gainMastery(rollDice(MASTER_DICE_AUTO)); }   // slot apprentice learns by watching (1d6)
       }
       if (!it) {                                           // idle — start a new item if possible
         if (this.inputAvail(k) && this.outputRoom(k)) { this.consumeInput(k); this.lineItems[k] = it = { prog: 0 }; }
