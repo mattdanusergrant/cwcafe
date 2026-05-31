@@ -108,6 +108,7 @@ const HIRE_COST      = 100;   // coins to hire an apprentice
 const WAGE_PER_SEC   = 0.4;   // coins each helper costs per second
 const TRAY_MAX       = 6;     // finished dishes a stall's pickup tray can hold (buffer for hand-cooking)
 const BUFFER_CAP     = 3;     // items a between-step buffer holds before the upstream step blocks (upgradable)
+const MANUAL_CD_MULT = 1.8;   // manual-button cooldown = step time x this (longer than a helper's cycle)
 const QUEUE_MAX      = 4;     // customers that line up at a stall
 const PATIENCE_MS    = 14000;
 const SPAWN_MS       = 1500;  // customers arrive briskly, so pitching in by hand sells more & earns faster
@@ -543,7 +544,7 @@ class Stall extends Phaser.Scene {
       const label = this.add.text(0, 9, s.label, { fontFamily:FONT, fontSize:'12px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5);
       const cdg = this.add.graphics();   // cooldown overlay (after a manual tap)
       cont.add([bg, emoji, label, cdg]);
-      return { i, sid, x, y, w, h, cont, bg, emoji, label, cdg, cd: 0, cdMax: STEPS[sid].ms };
+      return { i, sid, x, y, w, h, cont, bg, emoji, label, cdg, cd: 0, cdMax: STEPS[sid].ms * MANUAL_CD_MULT };
     });
 
     // Helper slots — beneath each button; a worker here automates that step in parallel with the player.
@@ -828,8 +829,8 @@ class Stall extends Phaser.Scene {
   }
 
   // Player taps a manual workstation: perform one cycle + give the apprentice XP.
-  // Using ANY station then cools down ALL manual stations (each by its own step time)
-  // so the player works one step at a time rather than spamming the line.
+  // Each button then cools down (a bit longer than the step's natural time) so it
+  // can't be spammed; other stations stay independent, so you juggle the line.
   performManual(k) {
     const st = this.stations[k];
     if (st.cd > 0) return;                                // still cooling down
@@ -837,7 +838,7 @@ class Stall extends Phaser.Scene {
     if (!this.outputRoom(k)) { this.flashHint(STEPS[this.recipe.steps[k]].label + ' buffer is full — clear it downstream 👉'); return; }
     this.consumeInput(k);
     this.pushOutput(k, st.x, st.y);
-    this.stations.forEach(s => { s.cd = s.cdMax; });      // global cooldown: every manual station rests
+    st.cd = st.cdMax;                                     // start this button's own cooldown
     const w = this.stall.trainee;
     if (w) {                                              // the apprentice gains XP from your work
       const before = wLevel(w);
