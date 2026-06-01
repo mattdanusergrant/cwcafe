@@ -119,10 +119,10 @@ const BUFFER_CAP     = 3;     // items a between-step buffer holds before the up
 const MANUAL_CD_MULT = 1.8;   // manual-button cooldown = step time x this (longer than a helper's cycle)
 const QUEUE_MAX      = 4;     // customers that line up at a stall
 const PATIENCE_MS    = 14000;
-// Customers roam the market and, from time to time, one wanders into an open stall.
-// This single shared cadence is split across all open stalls, so each stall's
-// arrivals are throttled (more stalls open → fewer each).
-const ENTER_MS       = 3000;  // a roamer enters SOME open stall about this often
+// Customers roam the market and, from time to time, wander into a stall. EACH open
+// stall draws customers on its own independent timer, so opening more stalls brings
+// more total customers (without slowing the ones you already have).
+const ENTER_MS       = 5000;  // a customer enters EACH open stall about this often
 const MARKET_ROAMERS = 6;     // how many customers wander the crossroads (visual)
 const WORKER_EMOJIS  = ['🐱', '🐶', '🐰', '🐻', '🦊', '🐼', '🐯', '🐸'];
 
@@ -188,25 +188,27 @@ const G = {
   quest: 0,                    // index into QUESTS (the current tutorial goal)
   stats: { handMade: 0, restocks: 0 },   // dishes finished by hand + supply restocks (for quests)
   pending: {},                 // per-stall count of roamers who've walked in, waiting to be seated
-  enterAcc: 0,                 // shared timer: a roamer enters some open stall every ENTER_MS
+  enterAcc: {},                // per-stall arrival timer (each stall draws customers independently)
 };
 
 // Open stalls a roaming customer might wander into.
 const openStalls = () => STALL_ORDER.filter(id => STALLS[id].state === 'open');
 
-// Global customer arrivals: every ENTER_MS, one roamer enters a random open stall
-// (queues a "pending" arrival there). Runs in both scenes, so stalls fill whether
-// or not you're looking at them. Returns the stall id a roamer entered, else null.
+// Customer arrivals: EACH open stall has its OWN independent (slow) arrival rate,
+// so opening more stalls draws more total customers — it does not slow the others.
+// Runs in both scenes, so stalls fill whether or not you're looking at them.
+// Returns a stall id that just got an arrival (for the market's enter animation), else null.
 function tickArrivals(dtMs) {
-  const open = openStalls();
-  if (open.length === 0) return null;
-  G.enterAcc += dtMs;
-  if (G.enterAcc < ENTER_MS) return null;
-  G.enterAcc -= ENTER_MS;
-  const id = open[Math.floor(Math.random() * open.length)];
-  // cap pending so an unattended stall doesn't bank infinite customers (its queue is QUEUE_MAX)
-  G.pending[id] = Math.min(QUEUE_MAX, (G.pending[id] || 0) + 1);
-  return id;
+  let entered = null;
+  for (const id of openStalls()) {
+    G.enterAcc[id] = (G.enterAcc[id] || 0) + dtMs;
+    if (G.enterAcc[id] < ENTER_MS) continue;
+    G.enterAcc[id] -= ENTER_MS;
+    // cap pending so an unattended stall doesn't bank infinite customers (its queue is QUEUE_MAX)
+    G.pending[id] = Math.min(QUEUE_MAX, (G.pending[id] || 0) + 1);
+    entered = id;
+  }
+  return entered;
 }
 
 // Sequential tutorial quests — each pays a coin reward, pacing the early game:
