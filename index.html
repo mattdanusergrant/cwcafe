@@ -582,8 +582,9 @@ class Stall extends Phaser.Scene {
       const stk = this.add.text(0, 9, '', { fontFamily:FONT, fontSize:'12px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5);
       const cap = this.add.text(0, 24, '↺' + RESTOCK_COST + '💰', { fontFamily:FONT, fontSize:'8px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5);
       const arrow = this.add.text(w/2 + (STEP_X0 - STORAGE_X - w/2 - 39)/2, -2, '→', { fontFamily:FONT, fontSize:'15px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5);
-      cont.add([bg, box, stk, cap, arrow]);
-      this.storage = { x, y, w, h, cont, bg, stk, cap };
+      const alert = this.add.graphics();   // pulsing "out of stock!" ring (per-frame)
+      cont.add([bg, alert, box, stk, cap, arrow]);
+      this.storage = { x, y, w, h, cont, bg, stk, cap, alert };
     }
 
     // Manual buttons (the player's stations) — always tappable, one per step.
@@ -702,6 +703,16 @@ class Stall extends Phaser.Scene {
     s.bg.clear();
     s.bg.fillStyle(COL.tan, stock === 0 ? 0.10 : 0.18).fillRoundedRect(-s.w/2, -s.h/2, s.w, s.h, 12);
     s.bg.lineStyle(2.5, stock === 0 ? COL.red : COL.brown, stock === 0 ? 1 : 0.6).strokeRoundedRect(-s.w/2, -s.h/2, s.w, s.h, 12);
+  }
+
+  // Per-frame: pulse a red ring around Storage while it's empty, as an ongoing
+  // "you're out — restock!" cue. Quiet otherwise.
+  drawStorageAlert(time) {
+    const s = this.storage; s.alert.clear();
+    if (G.pantry[this.cfg.ingredient] > 0) return;
+    const puls = 0.5 + 0.5 * Math.sin(time / 220);
+    s.alert.lineStyle(3 + 2*puls, COL.red, 0.4 + 0.5*puls);
+    s.alert.strokeRoundedRect(-s.w/2 - 4 - 2*puls, -s.h/2 - 4 - 2*puls, s.w + 8 + 4*puls, s.h + 8 + 4*puls, 14);
   }
 
   // ---------------- Recipe tabs (switch recipe / buy equipment) ----------------
@@ -1146,6 +1157,7 @@ class Stall extends Phaser.Scene {
     this.tickCustomers(delta);
     this.checkQuest();
     this.checkAutomationMilestone(time);
+    this.drawStorageAlert(time);
     this.drawHighlight(time);
     this.refreshHud();
   }
