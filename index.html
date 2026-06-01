@@ -447,6 +447,7 @@ class Market extends Phaser.Scene {
 // dishes travel upward from the kitchen across the counter to the guests.
 const DOOR      = { x: W/2, y: 104 };          // customers enter from the top
 const QUEUE_Y   = [388, 320, 252, 184];        // front of line (by the counter) → back (by the door)
+const HINT_Y    = 144;                          // quest/hint pill — in the clean gap between the door and the queue
 const QUEUE_DX  = [0, 64, 0, -64];             // stagger left/right so neighbours don't overlap
 const COUNTER_Y = 424;                          // serving counter band — guests above, kitchen below
 const TRAY_Y    = 458;                          // pickup pass: finished dishes wait here to be served up
@@ -830,7 +831,7 @@ class Stall extends Phaser.Scene {
 
   buildHintPill() {
     this.hintBg = this.add.graphics().setDepth(70);
-    this.hintTxt = this.add.text(W/2, 116, '', { fontFamily:FONT, fontSize:'13px', color:hex(COL.brown), fontStyle:'700', align:'center', wordWrap:{ width: 320 } }).setOrigin(0.5).setDepth(71);
+    this.hintTxt = this.add.text(W/2, HINT_Y, '', { fontFamily:FONT, fontSize:'13px', color:hex(COL.brown), fontStyle:'700', align:'center', wordWrap:{ width: 320 } }).setOrigin(0.5).setDepth(71);
   }
 
   setHint(msg) {
@@ -838,8 +839,8 @@ class Stall extends Phaser.Scene {
     this.hintBg.clear();
     if (msg) {
       const w = this.hintTxt.width + 24, h = this.hintTxt.height + 14;
-      this.hintBg.fillStyle(COL.card, 0.96).fillRoundedRect(W/2-w/2, 116-h/2, w, h, 11);
-      this.hintBg.lineStyle(2, COL.dim, 1).strokeRoundedRect(W/2-w/2, 116-h/2, w, h, 11);
+      this.hintBg.fillStyle(COL.card, 0.97).fillRoundedRect(W/2-w/2, HINT_Y-h/2, w, h, 11);
+      this.hintBg.lineStyle(2, COL.amber, 1).strokeRoundedRect(W/2-w/2, HINT_Y-h/2, w, h, 11);
     }
   }
 
