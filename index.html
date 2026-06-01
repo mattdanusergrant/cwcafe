@@ -64,6 +64,7 @@ const INGREDIENTS = {
   dough: { emoji:'🌾', label:'Dough' },   // 🥟 dumplings
   tea:   { emoji:'🍵', label:'Tea'   },   // 🧋 boba
   broth: { emoji:'🍲', label:'Broth' },   // 🍜 noodles (future)
+  cloth: { emoji:'🧵', label:'Cloth' },   // 🧦 PJ stall
 };
 
 // ---- Steps: the shared library recipes are built from. Steps reused across
@@ -77,6 +78,9 @@ const STEPS = {
   brew:   { emoji:'🍵',  label:'Brew',   ms:700 },
   pour:   { emoji:'🥛',  label:'Pour',   ms:600 },
   pearls: { emoji:'🟤',  label:'Pearls', ms:700 },
+  cut:    { emoji:'✂️',  label:'Cut',    ms:700 },   // 🧦 PJ stall
+  sew:    { emoji:'🪡',  label:'Sew',    ms:900 },
+  fold:   { emoji:'📦',  label:'Fold',   ms:600 },
 };
 
 // ---- Recipes: an ordered list of step ids. A stall can switch between the
@@ -85,6 +89,8 @@ const RECIPES = {
   boiled:   { name:'Boiled',    emoji:'🥟', value:6,  steps:['wrap','fill','boil'] },
   panfried: { name:'Pan-fried', emoji:'🥟', value:11, steps:['wrap','fill','fry'] },
   milktea:  { name:'Milk Tea',  emoji:'🧋', value:8,  steps:['brew','pour','pearls'] },
+  pajamas:  { name:'Pajamas',   emoji:'🧦', value:10, steps:['cut','sew','fold'] },
+  noodlesoup:{ name:'Noodle Soup', emoji:'🍜', value:9, steps:['boil','fill','pour'] },
 };
 
 // ---- Stalls: the market roster. Only the dumpling stall is enterable for now.
@@ -95,9 +101,11 @@ const STALLS = {
   dumpling: { name:'Dumpling Stall', emoji:'🥟', accent:COL.red,   ingredient:'dough', recipe:'boiled',  state:'open',
               unlock:{ recipe:'panfried', cost:250, equip:'🍳 Pan' } },
   boba:     { name:'Boba Stall',     emoji:'🧋', accent:COL.pink,  ingredient:'tea',   recipe:'milktea', state:'locked', cost:250 },
-  noodle:   { name:'Noodle Stall',   emoji:'🍜', accent:COL.amber, ingredient:'broth', recipe:'noodlesoup', state:'soon' },
+  noodle:   { name:'Noodle Stall',   emoji:'🍜', accent:COL.amber, ingredient:'broth', recipe:'noodlesoup', state:'locked', cost:500 },
+  pj:       { name:'PJ Stall',       emoji:'🧦', accent:COL.blue,  ingredient:'cloth', recipe:'pajamas', state:'locked', cost:750 },
 };
-const STALL_ORDER = ['dumpling', 'boba', 'noodle'];
+// Corner order for the crossroads: TL, TR, BL, BR.
+const STALL_ORDER = ['dumpling', 'boba', 'noodle', 'pj'];
 
 // ---- Economy / tuning ----
 const START_COINS    = 60;    // lean start — the cook quest reward then funds the forced first hire
@@ -166,7 +174,7 @@ function wStationCd(w, id, sid) {
 
 const G = {
   coins: START_COINS,
-  pantry: { dough: START_STOCK, tea: START_STOCK, broth: START_STOCK },
+  pantry: { dough: START_STOCK, tea: START_STOCK, broth: START_STOCK, cloth: START_STOCK },
   wageBucket: 0,               // fractional wages owed
   workerSeq: 0,                // assigns each new helper their emoji/name/speed
   stalls: Object.fromEntries(STALL_ORDER.map(id => [id, makeStallState(id)])),
@@ -269,8 +277,9 @@ const inBox = (px, py, o, hw, hh) => px >= o.x-hw && px <= o.x+hw && py >= o.y-h
 const hitBtn = (px, py, b) => inBox(px, py, b, b.w/2, b.h/2);
 
 /* ============================================================================
-   MARKET SCENE — the hub: tap a stall to step inside it
+   MARKET SCENE — a crossroads hub: 4 corner tents, one per stall
    ========================================================================== */
+const MARKET_CY = 470;   // vertical center of the crossroads (tents sit 150px above/below)
 class Market extends Phaser.Scene {
   constructor() { super('market'); }
 
@@ -278,19 +287,16 @@ class Market extends Phaser.Scene {
     this.drawBackground();
     this.buildHud();
 
-    this.add.text(W/2, 74, '🏮 CW Market', { fontFamily:FONT, fontSize:'26px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5).setDepth(5);
-
-    // Quest banner: the current tutorial goal + its coin reward.
+    // Quest banner near the top, above the crossroads.
     this.qbBg = this.add.graphics().setDepth(4);
-    this.qbTxt = this.add.text(W/2, 110, '', { fontFamily:FONT, fontSize:'13px', color:hex(COL.brown), fontStyle:'800', align:'center' }).setOrigin(0.5).setDepth(5);
+    this.qbTxt = this.add.text(W/2, 92, '', { fontFamily:FONT, fontSize:'13px', color:hex(COL.brown), fontStyle:'800', align:'center' }).setOrigin(0.5).setDepth(5);
 
-    // One card per stall, stacked down the screen.
+    // One tent per stall, in the four corners around the crossroads.
     this.cards = [];
-    const top = 150, cardH = 184, gap = 16;
-    STALL_ORDER.forEach((id, i) => this.cards.push(this.buildCard(id, top + i*(cardH+gap), cardH)));
+    STALL_ORDER.forEach((id, i) => this.cards.push(this.buildTent(id, i)));
 
     this.hintPill = this.makeHintPill();
-    this.hl = this.add.graphics().setDepth(8);   // first-run nudge toward the dumpling stall
+    this.hl = this.add.graphics().setDepth(40);   // first-run nudge toward the dumpling tent
     this.input.on('pointerdown', p => this.handleTap(p.x, p.y));
     this.refreshHud();
     this.refreshCards();
@@ -304,19 +310,19 @@ class Market extends Phaser.Scene {
     const p = q.prog && q.prog();
     this.qbTxt.setText('📋 ' + q.text + ' ' + q.emoji + (p ? '  (' + p.n + '/' + p.of + ')' : '') + '   ·   +' + q.reward + '💰');
     const w = this.qbTxt.width + 26, h = 26;
-    this.qbBg.fillStyle(COL.card, 0.96).fillRoundedRect(W/2-w/2, 110-h/2, w, h, 10);
-    this.qbBg.lineStyle(2, COL.amber, 1).strokeRoundedRect(W/2-w/2, 110-h/2, w, h, 10);
+    this.qbBg.fillStyle(COL.card, 0.96).fillRoundedRect(W/2-w/2, 92-h/2, w, h, 10);
+    this.qbBg.lineStyle(2, COL.amber, 1).strokeRoundedRect(W/2-w/2, 92-h/2, w, h, 10);
   }
 
-  // Pulse the dumpling ENTER button until the very first dish has been cooked.
+  // Pulse the dumpling tent until the very first dish has been cooked.
   drawHighlight(time) {
     const g = this.hl; g.clear();
     if (G.firstCookDone) return;
     const c = this.cards.find(c => c.id === 'dumpling');
-    if (!c || !c.btn.rect.visible) return;
-    const b = c.btn, puls = 0.5 + 0.5 * Math.sin(time / 250);
-    g.lineStyle(3 + 2*puls, COL.cream, 0.6 + 0.4*puls);
-    g.strokeRoundedRect(b.x - b.w/2 - 2*puls, b.y - b.h/2 - 2*puls, b.w + 4*puls, b.h + 4*puls, 12);
+    if (!c) return;
+    const puls = 0.5 + 0.5 * Math.sin(time / 250);
+    g.lineStyle(3 + 2*puls, COL.btn, 0.5 + 0.4*puls);
+    g.strokeRoundedRect(c.x - c.hw - 2*puls, c.y - c.hh - 2*puls, c.hw*2 + 4*puls, c.hh*2 + 4*puls, 14);
   }
 
   drawBackground() {
@@ -327,6 +333,15 @@ class Market extends Phaser.Scene {
         const alt = (Math.floor(xx/t) + Math.floor(yy/t)) % 2 === 0;
         g.fillStyle(alt ? COL.floor : COL.floorAlt, 1).fillRect(xx, yy, t, t);
       }
+    // Crossroads: two dirt paths meeting in the middle, with the 4 tents in the corners.
+    const cx = W/2, cy = MARKET_CY, pw = 64;
+    g.fillStyle(COL.counter, 0.5);
+    g.fillRect(cx - pw/2, 96, pw, H - 96);          // vertical road
+    g.fillRect(0, cy - pw/2, W, pw);                // horizontal road
+    g.fillStyle(COL.tan, 0.85).fillCircle(cx, cy, 30);   // central plaza
+    g.lineStyle(2, COL.counter, 0.6).strokeCircle(cx, cy, 30);
+    this.add.text(cx, cy, '🏮', { fontSize:'26px' }).setOrigin(0.5).setDepth(1);
+    this.add.text(cx, cy + 26, 'CW Market', { fontFamily:FONT, fontSize:'11px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5).setDepth(1);
   }
 
   buildHud() {
@@ -342,50 +357,62 @@ class Market extends Phaser.Scene {
     this.statLabel.setText('🐾 ' + n + wageStr);
   }
 
-  buildCard(id, y, h) {
-    const cfg = STALLS[id], cx = W/2, cardW = 334, left = cx - cardW/2;
-    const bg = this.add.graphics().setDepth(4);
-    const emoji = this.add.text(left + 46, y + 52, cfg.emoji, { fontSize:'46px' }).setOrigin(0.5).setDepth(5);
-    this.add.text(left + 84, y + 30, cfg.name, { fontFamily:FONT, fontSize:'19px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0,0.5).setDepth(5);
-    const status = this.add.text(left + 84, y + 58, '', { fontFamily:FONT, fontSize:'12px', color:hex(COL.dim), fontStyle:'700', lineSpacing:3, wordWrap:{ width: cardW - 100 } }).setOrigin(0,0).setDepth(5);
-    // One action button per card; its label/fill/visibility track the stall's state.
-    const btn = makeButton(this, cx, y + h - 30, cardW - 28, 42, COL.btn, '', '16px', 6);
-    return { id, cfg, y, h, left, cardW, bg, emoji, status, btn };
+  // A corner tent for stall `id`. Quadrant index i: 0=TL, 1=TR, 2=BL, 3=BR.
+  buildTent(id, i) {
+    const cfg = STALLS[id];
+    const colX = (i % 2 === 0) ? W*0.27 : W*0.73;            // left / right column
+    const rowY = (i < 2) ? MARKET_CY - 150 : MARKET_CY + 150; // top / bottom row
+    const hw = 86, hh = 92, x = colX, y = rowY;
+    const cont = this.add.container(x, y).setDepth(4);
+    const bg = this.add.graphics();                          // tent body + striped awning (state-driven)
+    const emoji = this.add.text(0, -8, cfg.emoji, { fontSize:'42px' }).setOrigin(0.5);
+    const name  = this.add.text(0, 30, cfg.name, { fontFamily:FONT, fontSize:'12px', color:hex(COL.brown), fontStyle:'800', align:'center', wordWrap:{ width: hw*2-16 } }).setOrigin(0.5, 0);
+    const status= this.add.text(0, 54, '', { fontFamily:FONT, fontSize:'9px', color:hex(COL.dim), fontStyle:'700', align:'center', wordWrap:{ width: hw*2-14 } }).setOrigin(0.5, 0);
+    cont.add([bg, emoji, name, status]);
+    return { id, cfg, x, y, hw, hh, cont, bg, emoji, name, status };
+  }
+
+  // Draw one tent: a striped awning peak over a body box, tinted by state.
+  drawTent(c) {
+    const cfg = c.cfg, open = cfg.state === 'open', g = c.bg;
+    const hw = c.hw, hh = c.hh, bodyTop = -hh + 26;
+    g.clear();
+    // body
+    g.fillStyle(COL.card, open ? 1 : 0.92).fillRoundedRect(-hw, bodyTop, hw*2, hh*2 - 26, 12);
+    g.lineStyle(3, cfg.accent, open ? 1 : 0.5).strokeRoundedRect(-hw, bodyTop, hw*2, hh*2 - 26, 12);
+    // striped awning peak (a triangle of accent + cream stripes)
+    g.fillStyle(cfg.accent, open ? 1 : 0.55);
+    g.beginPath(); g.moveTo(0, -hh - 6); g.lineTo(-hw - 6, bodyTop); g.lineTo(hw + 6, bodyTop); g.closePath(); g.fillPath();
+    g.fillStyle(COL.cream, open ? 0.5 : 0.3);
+    for (let sx = -hw; sx < hw; sx += 28) {                  // stripe hints
+      const t0 = Phaser.Math.Clamp((sx+hw)/(hw*2), 0, 1);
+      g.fillRect(sx, bodyTop - 5, 13, 5);
+    }
+    c.emoji.setAlpha(open ? 1 : 0.5);
   }
 
   refreshCards() {
     for (const c of this.cards) {
-      const cfg = c.cfg, open = cfg.state === 'open';
-      c.bg.clear();
-      c.bg.fillStyle(COL.card, open ? 1 : 0.9).fillRoundedRect(c.left, c.y, c.cardW, c.h, 18);
-      c.bg.lineStyle(3, cfg.accent, open ? 1 : 0.5).strokeRoundedRect(c.left, c.y, c.cardW, c.h, 18);
-      c.emoji.setAlpha(open ? 1 : 0.5);
-
-      if (open) {
+      const cfg = c.cfg;
+      this.drawTent(c);
+      if (cfg.state === 'open') {
         const s = G.stalls[c.id], ing = cfg.ingredient, r = recipeOf(c.id);
         let txt;
         if (isAutomated(c.id)) {
           const rate = r.value / (lineCycle(c.id) / 1000);
-          txt = (G.pantry[ing] > 0)
-            ? '🤖 Assembly line running  ·  +' + rate.toFixed(1) + '/s\nServed ' + s.served + '   ·   ' + INGREDIENTS[ing].emoji + ' ' + G.pantry[ing] + ' left'
-            : '⚠️ Out of ' + INGREDIENTS[ing].emoji + ' — step in to restock\nServed ' + s.served;
+          txt = (G.pantry[ing] > 0) ? '🤖 +' + rate.toFixed(1) + '/s · served ' + s.served
+                                    : '⚠️ out of ' + INGREDIENTS[ing].emoji + ' · served ' + s.served;
         } else if (s.autos.some(Boolean)) {
-          const staffed = s.autos.filter(Boolean).length;
-          txt = '🛠️ Line ' + staffed + '/' + r.steps.length + ' staffed — fill every station\nServed ' + s.served;
+          txt = '🛠️ line ' + s.autos.filter(Boolean).length + '/' + r.steps.length + ' · served ' + s.served;
         } else if (s.trainee) {
-          txt = '👩‍🍳 Training ' + s.trainee.name + ' · ' + Math.floor(wMastery(s.trainee, c.id)) + '%\nServed ' + s.served;
+          txt = '👩‍🍳 training ' + Math.floor(wMastery(s.trainee, c.id)) + '%';
         } else {
-          txt = (s.served > 0 ? 'Served ' + s.served + '  ·  ' : '') + 'Cook by hand 👆 to earn\nHire an apprentice to automate';
+          txt = s.served > 0 ? 'served ' + s.served + ' · tap to run' : 'tap to cook 👆';
         }
-        c.status.setText(txt);
-        c.btn.txt.setText('ENTER  →'); c.btn.rect.setFillStyle(COL.btn).setVisible(true); c.btn.txt.setVisible(true);
-      } else if (cfg.state === 'locked') {
-        c.status.setText('A new stall to open up.\nIts own recipe to learn and automate.');
+        c.status.setText(txt).setColor(hex(COL.dim));
+      } else {   // locked / buyable
         const afford = G.coins >= cfg.cost;
-        c.btn.txt.setText('🔓 Open  ·  ' + cfg.cost + ' 💰'); c.btn.rect.setFillStyle(afford ? COL.amber : COL.btnOff).setVisible(true); c.btn.txt.setVisible(true);
-      } else {   // soon
-        c.status.setText('Coming in a future update.');
-        c.btn.rect.setVisible(false); c.btn.txt.setVisible(false);
+        c.status.setText('🔓 Open · ' + cfg.cost + '💰').setColor(hex(afford ? COL.btn : COL.dim));
       }
     }
   }
@@ -397,24 +424,13 @@ class Market extends Phaser.Scene {
   }
 
   handleTap(px, py) {
-    // action buttons first (ENTER / Open)
+    // tap a tent: open → enter; locked → buy & open
     for (const c of this.cards) {
-      if (!c.btn.rect.visible || !hitBtn(px, py, c.btn)) continue;
+      if (px < c.x - c.hw || px > c.x + c.hw || py < c.y - c.hh - 6 || py > c.y + c.hh) continue;
       if (c.cfg.state === 'open') this.scene.start('stall', { id: c.id });
-      else if (c.cfg.state === 'locked') this.tryOpenStall(c);
+      else this.tryOpenStall(c);
       return;
     }
-    // card-body taps: open → enter, locked/soon → explain
-    const top = 150, cardH = 184, gap = 16;
-    STALL_ORDER.forEach((id, i) => {
-      const y = top + i*(cardH+gap);
-      if (py >= y && py <= y + cardH) {
-        const cfg = STALLS[id];
-        if (cfg.state === 'open') this.scene.start('stall', { id });
-        else if (cfg.state === 'locked') this.hintPill.show('Tap “Open” to start the ' + cfg.name + ' for ' + cfg.cost + ' 💰');
-        else this.hintPill.show('🍜 Noodles are coming soon!');
-      }
-    });
   }
 
   // Open a locked stall for coins, then step straight inside to start cooking.
