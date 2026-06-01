@@ -119,7 +119,11 @@ const BUFFER_CAP     = 3;     // items a between-step buffer holds before the up
 const MANUAL_CD_MULT = 1.8;   // manual-button cooldown = step time x this (longer than a helper's cycle)
 const QUEUE_MAX      = 4;     // customers that line up at a stall
 const PATIENCE_MS    = 14000;
-const SPAWN_MS       = 1500;  // customers arrive briskly, so pitching in by hand sells more & earns faster
+// Customers roam the market and, from time to time, one wanders into an open stall.
+// This single shared cadence is split across all open stalls, so each stall's
+// arrivals are throttled (more stalls open → fewer each).
+const ENTER_MS       = 3000;  // a roamer enters SOME open stall about this often
+const MARKET_ROAMERS = 6;     // how many customers wander the crossroads (visual)
 const WORKER_EMOJIS  = ['🐱', '🐶', '🐰', '🐻', '🦊', '🐼', '🐯', '🐸'];
 
 /* ============================================================================
@@ -183,7 +187,27 @@ const G = {
   taughtPan: false,            // true once the pan-fried unlock has been pointed out
   quest: 0,                    // index into QUESTS (the current tutorial goal)
   stats: { handMade: 0, restocks: 0 },   // dishes finished by hand + supply restocks (for quests)
+  pending: {},                 // per-stall count of roamers who've walked in, waiting to be seated
+  enterAcc: 0,                 // shared timer: a roamer enters some open stall every ENTER_MS
 };
+
+// Open stalls a roaming customer might wander into.
+const openStalls = () => STALL_ORDER.filter(id => STALLS[id].state === 'open');
+
+// Global customer arrivals: every ENTER_MS, one roamer enters a random open stall
+// (queues a "pending" arrival there). Runs in both scenes, so stalls fill whether
+// or not you're looking at them. Returns the stall id a roamer entered, else null.
+function tickArrivals(dtMs) {
+  const open = openStalls();
+  if (open.length === 0) return null;
+  G.enterAcc += dtMs;
+  if (G.enterAcc < ENTER_MS) return null;
+  G.enterAcc -= ENTER_MS;
+  const id = open[Math.floor(Math.random() * open.length)];
+  // cap pending so an unattended stall doesn't bank infinite customers (its queue is QUEUE_MAX)
+  G.pending[id] = Math.min(QUEUE_MAX, (G.pending[id] || 0) + 1);
+  return id;
+}
 
 // Sequential tutorial quests — each pays a coin reward, pacing the early game:
 // cook by hand → hire (forced) → train → assign → run dry & restock → expand.
@@ -295,12 +319,55 @@ class Market extends Phaser.Scene {
     this.cards = [];
     STALL_ORDER.forEach((id, i) => this.cards.push(this.buildTent(id, i)));
 
+    this.buildRoamers();
     this.hintPill = this.makeHintPill();
     this.hl = this.add.graphics().setDepth(40);   // first-run nudge toward the dumpling tent
     this.input.on('pointerdown', p => this.handleTap(p.x, p.y));
     this.refreshHud();
     this.refreshCards();
     this.refreshQuestBanner();
+  }
+
+  // ---------------- Roaming customers ----------------
+  // A pool of shoppers wandering the crossroads. Each picks random spots to stroll
+  // to; when a roamer is tapped to "enter" a stall, it walks into that tent and
+  // respawns elsewhere a moment later.
+  buildRoamers() {
+    const tent = this.cards.find(c => c.id === 'dumpling');
+    this.roamers = [];
+    for (let i = 0; i < MARKET_ROAMERS; i++) {
+      const face = Phaser.Utils.Array.GetRandom(['🙂','😀','😊','🧑','👩','👨','🧒']);
+      const cont = this.add.container(this.randSpot().x, this.randSpot().y).setDepth(20);
+      cont.add(this.add.circle(0, 0, 13, COL.card).setStrokeStyle(2, COL.dim));
+      cont.add(this.add.text(0, 0, face, { fontSize:'15px' }).setOrigin(0.5));
+      const r = { cont, walking:false };
+      this.roamers.push(r);
+      this.strollLater(r, Math.random() * 2000);
+    }
+  }
+
+  randSpot() {
+    // anywhere on the open floor, biased toward the road bands so it reads as a market
+    return { x: 30 + Math.random() * (W - 60), y: 150 + Math.random() * (H - 230) };
+  }
+
+  strollLater(r, ms) {
+    this.time.delayedCall(ms, () => {
+      if (!r.cont.active || r.walking) return;
+      const to = this.randSpot(); r.walking = true;
+      this.tweens.add({ targets: r.cont, x: to.x, y: to.y, duration: 1600 + Math.random()*1600, ease:'Sine.InOut',
+        onComplete: () => { r.walking = false; this.strollLater(r, 600 + Math.random()*2600); } });
+    });
+  }
+
+  // Send a roamer walking into the given tent, then respawn it back on the floor.
+  sendRoamerToTent(id) {
+    const tent = this.cards.find(c => c.id === id); if (!tent) return;
+    const r = this.roamers.find(x => !x.entering); if (!r) return;
+    r.entering = true;
+    this.tweens.killTweensOf(r.cont);
+    this.tweens.add({ targets: r.cont, x: tent.x, y: tent.y - 10, scale: 0.5, alpha: 0, duration: 600, ease:'Sine.In',
+      onComplete: () => { r.cont.setScale(1).setAlpha(1).setPosition(this.randSpot().x, this.randSpot().y); r.entering = false; r.walking = false; this.strollLater(r, 400 + Math.random()*1500); } });
   }
 
   refreshQuestBanner() {
@@ -446,6 +513,8 @@ class Market extends Phaser.Scene {
   update(time, delta) {
     tickWages(delta);
     tickPassive(delta, null);   // every automated stall earns while you're in the market
+    const entered = tickArrivals(delta);          // a roamer wandered into a stall?
+    if (entered) this.sendRoamerToTent(entered);  // walk one of our shoppers into that tent
     const q = tryCompleteQuest();
     if (q) this.hintPill.show('✅ ' + q.text + '  ·  +' + q.reward + '💰');
     this.refreshHud();
@@ -498,7 +567,6 @@ class Stall extends Phaser.Scene {
     this.tray = [];        // finished-dish tokens waiting on the pickup tray
     this.lineItems = this.stall.autos.map(() => null);   // per-workstation in-progress AUTO item ({prog}) or null
     this.customers = [];
-    this.spawnAcc = SPAWN_MS * 0.4;
     this.wasAutomated = isAutomated(this.id);   // to detect the moment this stall first runs itself
     this.guideBackUntil = 0;                    // briefly highlight ← Market right after that moment
 
@@ -1082,8 +1150,11 @@ class Stall extends Phaser.Scene {
   }
 
   tickCustomers(delta) {
-    this.spawnAcc += delta;
-    if (this.spawnAcc >= SPAWN_MS) { this.spawnAcc = 0; this.spawnCustomer(); }
+    // Seat any roamers who've wandered into this stall (queued globally by tickArrivals).
+    while ((G.pending[this.id] || 0) > 0 && this.customers.length < QUEUE_MAX) {
+      G.pending[this.id] -= 1;
+      this.spawnCustomer();
+    }
     // serve as many fronts as we have tray dishes
     while (this.tray.length > 0 && this.customers.some(c => c.state === 'waiting')) this.serveFront();
     for (const cu of [...this.customers]) {
@@ -1245,6 +1316,7 @@ class Stall extends Phaser.Scene {
     if (!this.tutorialFrozen()) {
       tickWages(delta);
       tickPassive(delta, this.id);   // other automated stalls keep earning while you're here
+      tickArrivals(delta);           // roamers wander into stalls (this one + others) over time
       this.stations.forEach(st => { if (st.cd > 0) st.cd = Math.max(0, st.cd - delta); });   // manual button cooldowns
       this.tickAutoStations(delta);  // staffed workstations advance + move items through buffers
       this.tickCustomers(delta);
