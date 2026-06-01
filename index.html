@@ -101,9 +101,9 @@ const STALL_ORDER = ['dumpling', 'boba', 'noodle'];
 
 // ---- Economy / tuning ----
 const START_COINS    = 60;    // a lean start — sell a few by hand (and clear quests) to afford your first hire
-const START_STOCK    = 22;    // a smooth first training run (~15 dishes) before the first restock
-const RESTOCK_AMOUNT = 20;    // units per restock
-const RESTOCK_COST   = 20;    // coins per restock (below the per-dish margin)
+const START_STOCK    = 10;    // a small starting larder — you run dry early, prompting the big restock
+const RESTOCK_AMOUNT = 100;   // units per restock — a big, deliberate resupply
+const RESTOCK_COST   = 100;   // coins per restock (a real moment: 1 coin / unit)
 const HIRE_COST      = 100;   // coins to hire an apprentice
 const WAGE_PER_SEC   = 0.4;   // coins each helper costs per second
 const TRAY_MAX       = 6;     // finished dishes a stall's pickup tray can hold (buffer for hand-cooking)
@@ -174,7 +174,7 @@ const G = {
   taughtAutomate: false,       // true once the player automates their first stall — stops the teaching highlights
   taughtPan: false,            // true once the pan-fried unlock has been pointed out
   quest: 0,                    // index into QUESTS (the current tutorial goal)
-  stats: { handMade: 0 },      // dishes the player has finished by hand (for quests)
+  stats: { handMade: 0, restocks: 0 },   // dishes finished by hand + supply restocks (for quests)
 };
 
 // Sequential tutorial quests — each pays out a coin reward, bootstrapping the
@@ -182,6 +182,8 @@ const G = {
 const QUESTS = [
   { text:'Cook 3 dumplings by hand', reward:50, emoji:'🥟',
     prog:()=>({ n:Math.min(G.stats.handMade,3), of:3 }), done:()=>G.stats.handMade >= 3 },
+  { text:'Restock supplies (📦 100 for 💰100)', reward:100, emoji:'📦',
+    done:()=>G.stats.restocks >= 1 },
   { text:'Hire your first apprentice', reward:60, emoji:'🐾',
     done:()=>G.workerSeq > 0 },
   { text:'Master a recipe (100%)', reward:80, emoji:'🎓',
@@ -499,6 +501,10 @@ class Stall extends Phaser.Scene {
   highlightTarget(time) {
     if (time < this.guideBackUntil) return { x:this.backBtn.x, y:this.backBtn.y, w:this.backBtn.w+10, h:this.backBtn.h+10 };
     if (!G.taughtAutomate) {                                  // teach the core loop on the first stall only
+      const q = currentQuest();
+      if (q && q.emoji === '📦' && G.coins >= RESTOCK_COST) {   // restock tutorial step → point at Storage
+        const s = this.storage; return { x:s.x, y:s.y, w:s.w+8, h:s.h+8 };
+      }
       const b = this.traineeBox, w = this.stall.trainee;
       if (w && this.deployStep(w) >= 0) return { x:b.x, y:b.y, w:b.halfW*2+8, h:b.halfH*2+8 };  // deploy a ready apprentice
       if (!w && G.coins >= HIRE_COST) return { x:b.x, y:b.y, w:b.halfW*2+8, h:b.halfH*2+8 };     // hire an apprentice
@@ -1094,11 +1100,14 @@ class Stall extends Phaser.Scene {
   }
 
   doRestock() {
-    if (G.coins < RESTOCK_COST) { this.flashHint('Need ' + RESTOCK_COST + ' 💰 to restock'); return; }
+    if (G.coins < RESTOCK_COST) { this.flashHint('Need ' + RESTOCK_COST + ' 💰 for a full restock'); return; }
     G.coins -= RESTOCK_COST;
     G.pantry[this.cfg.ingredient] += RESTOCK_AMOUNT;
+    G.stats.restocks += 1;
     this.refreshHud(); this.refreshStorage();
-    this.flashHint('Restocked ' + INGREDIENTS[this.cfg.ingredient].emoji + ' +' + RESTOCK_AMOUNT);
+    // a big, deliberate resupply — give it a moment
+    this.floatText(this.storage.x, this.storage.y - 44, '📦 +' + RESTOCK_AMOUNT, COL.green);
+    this.flashHint('📦 Supplies restocked! +' + RESTOCK_AMOUNT + ' ' + INGREDIENTS[this.cfg.ingredient].emoji, 2200);
   }
 
   // Trainee slot: hire an apprentice when empty; once they've mastered the recipe,
