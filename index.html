@@ -347,8 +347,13 @@ class Market extends Phaser.Scene {
   }
 
   randSpot() {
-    // anywhere on the open floor, biased toward the road bands so it reads as a market
-    return { x: 30 + Math.random() * (W - 60), y: 150 + Math.random() * (H - 230) };
+    // keep roamers on the streets: pick a point along the vertical or horizontal
+    // road band so they stroll the paths instead of wandering over the tents.
+    const cx = W/2, cy = MARKET_CY, half = 20;   // road half-width (band is ~46 wide)
+    if (Math.random() < 0.5) {
+      return { x: cx + (Math.random()*2-1)*half, y: 120 + Math.random() * (H - 150) };   // vertical road
+    }
+    return { x: 24 + Math.random() * (W - 48), y: cy + (Math.random()*2-1)*half };        // horizontal road
   }
 
   strollLater(r, ms) {
