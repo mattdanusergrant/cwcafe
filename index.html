@@ -401,7 +401,7 @@ class Market extends Phaser.Scene {
         g.fillStyle(alt ? COL.floor : COL.floorAlt, 1).fillRect(xx, yy, t, t);
       }
     // Crossroads: two dirt paths meeting in the middle, with the 4 tents in the corners.
-    const cx = W/2, cy = MARKET_CY, pw = 64;
+    const cx = W/2, cy = MARKET_CY, pw = 46;
     g.fillStyle(COL.counter, 0.5);
     g.fillRect(cx - pw/2, 96, pw, H - 96);          // vertical road
     g.fillRect(0, cy - pw/2, W, pw);                // horizontal road
@@ -427,9 +427,9 @@ class Market extends Phaser.Scene {
   // A corner tent for stall `id`. Quadrant index i: 0=TL, 1=TR, 2=BL, 3=BR.
   buildTent(id, i) {
     const cfg = STALLS[id];
-    const colX = (i % 2 === 0) ? W*0.27 : W*0.73;            // left / right column
-    const rowY = (i < 2) ? MARKET_CY - 150 : MARKET_CY + 150; // top / bottom row
-    const hw = 86, hh = 92, x = colX, y = rowY;
+    const colX = (i % 2 === 0) ? W*0.225 : W*0.775;          // left / right column (clear of the road)
+    const rowY = (i < 2) ? MARKET_CY - 152 : MARKET_CY + 152; // top / bottom row
+    const hw = 72, hh = 88, x = colX, y = rowY;
     const cont = this.add.container(x, y).setDepth(4);
     const bg = this.add.graphics();                          // tent body + striped awning (state-driven)
     const emoji = this.add.text(0, -8, cfg.emoji, { fontSize:'42px' }).setOrigin(0.5);
