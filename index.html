@@ -100,8 +100,8 @@ const STALLS = {
 const STALL_ORDER = ['dumpling', 'boba', 'noodle'];
 
 // ---- Economy / tuning ----
-const START_COINS    = 60;    // a lean start — sell a few by hand (and clear quests) to afford your first hire
-const START_STOCK    = 10;    // a small starting larder — you run dry early, prompting the big restock
+const START_COINS    = 60;    // lean start — the cook quest reward then funds the forced first hire
+const START_STOCK    = 20;    // enough to reach "both crafting" (steps 1-4); then it runs dry in step 5
 const RESTOCK_AMOUNT = 100;   // units per restock — a big, deliberate resupply
 const RESTOCK_COST   = 100;   // coins per restock (a real moment: 1 coin / unit)
 const HIRE_COST      = 100;   // coins to hire an apprentice
@@ -177,19 +177,20 @@ const G = {
   stats: { handMade: 0, restocks: 0 },   // dishes finished by hand + supply restocks (for quests)
 };
 
-// Sequential tutorial quests — each pays out a coin reward, bootstrapping the
-// early game so you sell a few by hand, then fund your first hire and beyond.
+// Sequential tutorial quests — each pays a coin reward, pacing the early game:
+// cook by hand → hire (forced) → train → assign → run dry & restock → expand.
 const QUESTS = [
   { text:'Cook 3 dumplings by hand', reward:50, emoji:'🥟',
     prog:()=>({ n:Math.min(G.stats.handMade,3), of:3 }), done:()=>G.stats.handMade >= 3 },
-  { text:'Restock supplies (📦 100 for 💰100)', reward:100, emoji:'📦',
-    done:()=>G.stats.restocks >= 1 },
   { text:'Hire your first apprentice', reward:60, emoji:'🐾',
     done:()=>G.workerSeq > 0 },
-  { text:'Master a recipe (100%)', reward:80, emoji:'🎓',
+  { text:'Train the apprentice — keep crafting', reward:80, emoji:'🎓',
+    prog:()=>{ const t = G.stalls.dumpling.trainee; const m = Math.floor(t ? wMastery(t,'dumpling') : 100); return { n:Math.min(m,100), of:100 }; },
     done:()=>STALL_ORDER.some(id => wTrained(G.stalls[id].trainee, id) || G.stalls[id].autos.some(Boolean)) },
-  { text:'Staff a line station with a helper', reward:120, emoji:'🤖',
+  { text:'Assign the trained apprentice to a station', reward:120, emoji:'🤖',
     done:()=>STALL_ORDER.some(id => G.stalls[id].autos.some(Boolean)) },
+  { text:'Out of supplies! Restock (📦100 for 💰100)', reward:100, emoji:'📦',
+    done:()=>G.stats.restocks >= 1 },
   { text:'Open the boba stall', reward:150, emoji:'🧋',
     done:()=>STALLS.boba.state === 'open' },
 ];
@@ -917,6 +918,10 @@ class Stall extends Phaser.Scene {
   // Each button then cools down (a bit longer than the step's natural time) so it
   // can't be spammed; other stations stay independent, so you juggle the line.
   performManual(k) {
+    // Tutorial gate: after the first 3 dishes, the hire quest forces you to take
+    // on an apprentice before crafting again (so your first taps actually train them).
+    const q = currentQuest();
+    if (q && q.emoji === '🐾' && !this.stall.trainee) { this.flashHint('Hire an apprentice first 🐾 — tap the card below'); return; }
     const st = this.stations[k];
     if (st.cd > 0) return;                                // still cooling down
     if (!this.inputAvail(k)) { this.flashHint(k === 0 ? 'Out of ' + INGREDIENTS[this.cfg.ingredient].emoji + ' — tap 📦 Storage to restock' : 'Nothing in the prep tray — do ' + STEPS[this.recipe.steps[k-1]].label + ' first 👈'); return; }
@@ -926,7 +931,7 @@ class Stall extends Phaser.Scene {
     st.cd = st.cdMax;                                     // start this button's own cooldown
     this.gainMastery(rollDice(MASTER_DICE_TAP));          // the slot apprentice learns from your work (2d6)
     if (k === this.recipe.steps.length - 1) G.stats.handMade += 1;   // a hand-finished dish (for the quest)
-    if (!G.firstCookDone) { G.firstCookDone = true; this.flashHint('Nice — a ' + this.recipe.emoji + '! Sell a few, then hire an apprentice 🐾 to train', 2600); }
+    if (!G.firstCookDone) { G.firstCookDone = true; this.flashHint('Nice — your first ' + this.recipe.emoji + '! Finish 3, then hire an apprentice 🐾', 2600); }
     this.refreshWorkforce(); this.refreshHud();
   }
 
