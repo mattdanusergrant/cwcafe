@@ -493,6 +493,7 @@ class Stall extends Phaser.Scene {
     this.buildHintPill();
     this.buildRecipeTabs();
     this.hl = this.add.graphics().setDepth(69);   // pulsing "do this next" highlight
+    this.spotlight = this.add.graphics().setDepth(65);   // dims everything but the apprentice card (forced-hire)
     this.refreshAll();
 
     this.input.on('pointerdown', p => this.handleTap(p.x, p.y));
@@ -531,6 +532,21 @@ class Stall extends Phaser.Scene {
     g.lineStyle(3 + 2*puls, COL.btn, 0.4 + 0.5*puls);
     if (t.r) g.strokeCircle(t.x, t.y, t.r + 3*puls);
     else     g.strokeRoundedRect(t.x - t.w/2 - 2*puls, t.y - t.h/2 - 2*puls, t.w + 4*puls, t.h + 4*puls, 14);
+  }
+
+  // During the forced-hire freeze, darken the whole screen EXCEPT the apprentice
+  // card, spotlighting the button the player must tap. (Drawn as four dark bands
+  // around the card, since graphics can't punch a hole.)
+  drawSpotlight() {
+    const g = this.spotlight; g.clear();
+    if (!this.tutorialFrozen()) return;
+    const b = this.traineeBox, pad = 8;
+    const L = b.x - b.halfW - pad, R = b.x + b.halfW + pad, T = b.y - b.halfH - pad, B = b.y + b.halfH + pad;
+    g.fillStyle(0x2A211B, 0.6);
+    g.fillRect(0, 0, W, T);            // above the card
+    g.fillRect(0, B, W, H - B);        // below the card
+    g.fillRect(0, T, L, B - T);        // left of the card
+    g.fillRect(R, T, W - R, B - T);    // right of the card
   }
 
   // ---------------- Layout / room ----------------
@@ -1219,6 +1235,7 @@ class Stall extends Phaser.Scene {
     }
     this.checkAutomationMilestone(time);
     this.drawStorageAlert(time);
+    this.drawSpotlight();
     this.drawHighlight(time);
     this.refreshHud();
   }
