@@ -476,6 +476,7 @@ class Stall extends Phaser.Scene {
     // skip rebuilding the (now-dead) trainee UI and crash on re-entry.
     this.traineeDot = null;
     this.stations = null; this.slots = null; this.bufviews = null;
+    this.restockModal = null;
 
     this.tray = [];        // finished-dish tokens waiting on the pickup tray
     this.lineItems = this.stall.autos.map(() => null);   // per-workstation in-progress AUTO item ({prog}) or null
@@ -1071,6 +1072,7 @@ class Stall extends Phaser.Scene {
 
   // ---------------- Input ----------------
   handleTap(px, py) {
+    if (this.restockModal) { this.restockModalTap(px, py); return; }   // modal swallows all other taps
     if (hitBtn(px, py, this.backBtn)) { this.scene.start('market'); return; }
     if (inBox(px, py, this.storage, this.storage.w/2, this.storage.h/2)) { this.doRestock(); return; }
     // trainee card: hire an apprentice, or (once ready) deploy them to a station
@@ -1115,7 +1117,15 @@ class Stall extends Phaser.Scene {
     this.refreshHud(); this.refreshWorkforce(); this.updateStandingHint();
   }
 
+  // Tapping Storage opens a confirmation before the big spend.
   doRestock() {
+    if (this.restockModal) return;
+    if (G.coins < RESTOCK_COST) { this.flashHint('Need ' + RESTOCK_COST + ' 💰 for a full restock'); return; }
+    this.openRestockConfirm();
+  }
+
+  // Apply the purchase (called from the confirmation's Confirm button).
+  confirmRestock() {
     if (G.coins < RESTOCK_COST) { this.flashHint('Need ' + RESTOCK_COST + ' 💰 for a full restock'); return; }
     G.coins -= RESTOCK_COST;
     G.pantry[this.cfg.ingredient] += RESTOCK_AMOUNT;
@@ -1124,6 +1134,41 @@ class Stall extends Phaser.Scene {
     // a big, deliberate resupply — give it a moment
     this.floatText(this.storage.x, this.storage.y - 44, '📦 +' + RESTOCK_AMOUNT, COL.green);
     this.flashHint('📦 Supplies restocked! +' + RESTOCK_AMOUNT + ' ' + INGREDIENTS[this.cfg.ingredient].emoji, 2200);
+  }
+
+  // ---------------- Restock confirmation modal ----------------
+  openRestockConfirm() {
+    const ing = this.cfg.ingredient, cx = W/2, cy = 420, pw = 300, ph = 196;
+    const cont = this.add.container(0, 0).setDepth(95);
+    cont.add(this.add.rectangle(W/2, H/2, W, H, 0x2A211B, 0.55));          // backdrop swallows outside taps
+    const panel = this.add.graphics();
+    panel.fillStyle(COL.card, 1).fillRoundedRect(cx-pw/2, cy-ph/2, pw, ph, 18);
+    panel.lineStyle(3, this.cfg.accent, 1).strokeRoundedRect(cx-pw/2, cy-ph/2, pw, ph, 18);
+    cont.add(panel);
+    cont.add(this.add.text(cx, cy-66, '📦 Restock supplies', { fontFamily:FONT, fontSize:'18px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5));
+    cont.add(this.add.text(cx, cy-34, 'Buy ' + RESTOCK_AMOUNT + ' ' + INGREDIENTS[ing].emoji + ' for ' + RESTOCK_COST + ' 💰', { fontFamily:FONT, fontSize:'15px', color:hex(COL.brown), fontStyle:'700' }).setOrigin(0.5));
+    cont.add(this.add.text(cx, cy-8, 'Balance ' + Math.floor(G.coins) + ' 💰  →  ' + (Math.floor(G.coins) - RESTOCK_COST) + ' 💰', { fontFamily:FONT, fontSize:'12px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5));
+    // buttons
+    const by = cy + 48, bw = 124, bh = 44, gap = 12;
+    const confirmX = cx - bw/2 - gap/2, cancelX = cx + bw/2 + gap/2;
+    cont.add(this.add.rectangle(confirmX, by, bw, bh, COL.btn).setStrokeStyle(2, COL.brown));
+    cont.add(this.add.text(confirmX, by, 'Restock  ' + RESTOCK_COST + '💰', { fontFamily:FONT, fontSize:'14px', color:'#FFFFFF', fontStyle:'800' }).setOrigin(0.5));
+    cont.add(this.add.rectangle(cancelX, by, bw, bh, COL.btnOff).setStrokeStyle(2, COL.brown));
+    cont.add(this.add.text(cancelX, by, 'Cancel', { fontFamily:FONT, fontSize:'14px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5));
+    this.restockModal = { cont, by, bh, bw, confirmX, cancelX };
+  }
+
+  closeRestockConfirm() {
+    if (!this.restockModal) return;
+    this.restockModal.cont.destroy();
+    this.restockModal = null;
+  }
+
+  restockModalTap(px, py) {
+    const m = this.restockModal;
+    const on = (bx) => Math.abs(px - bx) <= m.bw/2 && Math.abs(py - m.by) <= m.bh/2;
+    if (on(m.confirmX)) { this.closeRestockConfirm(); this.confirmRestock(); return; }
+    this.closeRestockConfirm();   // Cancel button, or tap anywhere outside
   }
 
   // Trainee slot: hire an apprentice when empty; once they've mastered the recipe,
