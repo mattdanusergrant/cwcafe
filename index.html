@@ -98,14 +98,15 @@ const RECIPES = {
 //   recipe: the recipe available from the start.
 //   unlock: an optional equipment purchase that adds a second recipe.
 const STALLS = {
-  dumpling: { name:'Dumpling Stall', emoji:'🥟', accent:COL.red,   ingredient:'dough', recipe:'boiled',  state:'open',
+  // 🧦 PJ Stall is your home base / HQ — the starting stall where the tutorial runs.
+  pj:       { name:'PJ Workshop (HQ)', emoji:'🧦', accent:COL.blue,  ingredient:'cloth', recipe:'pajamas', state:'open', hq:true },
+  dumpling: { name:'Dumpling Stall', emoji:'🥟', accent:COL.red,   ingredient:'dough', recipe:'boiled',  state:'locked', cost:150,
               unlock:{ recipe:'panfried', cost:250, equip:'🍳 Pan' } },
   boba:     { name:'Boba Stall',     emoji:'🧋', accent:COL.pink,  ingredient:'tea',   recipe:'milktea', state:'locked', cost:250 },
   noodle:   { name:'Noodle Stall',   emoji:'🍜', accent:COL.amber, ingredient:'broth', recipe:'noodlesoup', state:'locked', cost:500 },
-  pj:       { name:'PJ Stall',       emoji:'🧦', accent:COL.blue,  ingredient:'cloth', recipe:'pajamas', state:'locked', cost:750 },
 };
-// Corner order for the crossroads: TL, TR, BL, BR.
-const STALL_ORDER = ['dumpling', 'boba', 'noodle', 'pj'];
+// Corner order for the crossroads: TL, TR, BL, BR — HQ first (top-left).
+const STALL_ORDER = ['pj', 'dumpling', 'boba', 'noodle'];
 
 // ---- Economy / tuning ----
 const START_COINS    = 60;    // lean start — the cook quest reward then funds the forced first hire
@@ -214,19 +215,19 @@ function tickArrivals(dtMs) {
 // Sequential tutorial quests — each pays a coin reward, pacing the early game:
 // cook by hand → hire (forced) → train → assign → run dry & restock → expand.
 const QUESTS = [
-  { text:'Cook 3 dumplings by hand', reward:50, emoji:'🥟',
+  { text:'Make 3 pajamas by hand', reward:50, emoji:'🧦',
     prog:()=>({ n:Math.min(G.stats.handMade,3), of:3 }), done:()=>G.stats.handMade >= 3 },
   { text:'Hire your first apprentice', reward:60, emoji:'🐾',
     done:()=>G.workerSeq > 0 },
   { text:'Train the apprentice — keep crafting', reward:80, emoji:'🎓',
-    prog:()=>{ const t = G.stalls.dumpling.trainee; const m = Math.floor(t ? wMastery(t,'dumpling') : 100); return { n:Math.min(m,100), of:100 }; },
+    prog:()=>{ const t = G.stalls.pj.trainee; const m = Math.floor(t ? wMastery(t,'pj') : 100); return { n:Math.min(m,100), of:100 }; },
     done:()=>STALL_ORDER.some(id => wTrained(G.stalls[id].trainee, id) || G.stalls[id].autos.some(Boolean)) },
   { text:'Assign the trained apprentice to a station', reward:120, emoji:'🤖',
     done:()=>STALL_ORDER.some(id => G.stalls[id].autos.some(Boolean)) },
   { text:'Out of supplies! Restock (📦100 for 💰100)', reward:100, emoji:'📦',
     done:()=>G.stats.restocks >= 1 },
-  { text:'Open the boba stall', reward:150, emoji:'🧋',
-    done:()=>STALLS.boba.state === 'open' },
+  { text:'Expand! Open the Dumpling Stall', reward:150, emoji:'🥟',
+    done:()=>STALLS.dumpling.state === 'open' },
 ];
 const currentQuest = () => G.quest < QUESTS.length ? QUESTS[G.quest] : null;
 // If the current quest is satisfied, pay its reward, advance, and return it (for a toast).
@@ -335,7 +336,6 @@ class Market extends Phaser.Scene {
   // to; when a roamer is tapped to "enter" a stall, it walks into that tent and
   // respawns elsewhere a moment later.
   buildRoamers() {
-    const tent = this.cards.find(c => c.id === 'dumpling');
     this.roamers = [];
     for (let i = 0; i < MARKET_ROAMERS; i++) {
       const face = Phaser.Utils.Array.GetRandom(['🙂','😀','😊','🧑','👩','👨','🧒']);
@@ -388,11 +388,11 @@ class Market extends Phaser.Scene {
     this.qbBg.lineStyle(2, COL.amber, 1).strokeRoundedRect(W/2-w/2, 92-h/2, w, h, 10);
   }
 
-  // Pulse the dumpling tent until the very first dish has been cooked.
+  // Pulse the HQ (starting) tent until the very first item has been made by hand.
   drawHighlight(time) {
     const g = this.hl; g.clear();
     if (G.firstCookDone) return;
-    const c = this.cards.find(c => c.id === 'dumpling');
+    const c = this.cards.find(c => STALLS[c.id].hq);
     if (!c) return;
     const puls = 0.5 + 0.5 * Math.sin(time / 250);
     g.lineStyle(3 + 2*puls, COL.btn, 0.5 + 0.4*puls);
