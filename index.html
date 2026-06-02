@@ -111,7 +111,7 @@ const STALL_ORDER = ['pj', 'dumpling', 'boba', 'noodle'];
 // ---- Economy / tuning ----
 const START_COINS    = 60;    // lean start — the cook quest reward then funds the forced first hire
 const START_STOCK    = 20;    // enough to reach "both crafting" (steps 1-4); then it runs dry in step 5
-const RESTOCK_AMOUNT = 100;   // units per restock — a big, deliberate resupply
+const RESTOCK_AMOUNT = 100;   // BASE units per restock (Bulk Supply upgrade adds more)
 const RESTOCK_COST   = 100;   // coins per restock (a real moment: 1 coin / unit)
 const HIRE_COST      = 100;   // coins to hire an apprentice
 const WAGE_PER_SEC   = 0.4;   // coins each helper costs per second
@@ -123,7 +123,21 @@ const PATIENCE_MS    = 14000;
 // Customers roam the market and, from time to time, wander into a stall. EACH open
 // stall draws customers on its own independent timer, so opening more stalls brings
 // more total customers (without slowing the ones you already have).
-const ENTER_MS       = 3000;  // a customer enters EACH open stall about this often
+const ENTER_MS       = 3000;  // BASE: a customer enters EACH open stall this often (Market Buzz lowers it)
+
+// ---- Market Board: HQ-bought, market-wide upgrades (effect every stall) ----
+const MARKET_UPGRADES = {
+  bulk: { emoji:'📦', name:'Bulk Supply', desc:'+50 supply per restock',
+          base:200, max:4, effect:lv => RESTOCK_AMOUNT + 50*lv },          // restock amount
+  buzz: { emoji:'📣', name:'Market Buzz', desc:'customers arrive faster',
+          base:250, max:4, effect:lv => Math.round(ENTER_MS * Math.pow(0.85, lv)) },  // enter interval (ms)
+};
+const upLevel  = key => (G.upgrades[key] || 0);
+const upCost   = key => Math.round(MARKET_UPGRADES[key].base * Math.pow(1.8, upLevel(key)));
+const upMaxed  = key => upLevel(key) >= MARKET_UPGRADES[key].max;
+// Live, upgrade-aware values used by the rest of the game:
+const restockAmount = () => MARKET_UPGRADES.bulk.effect(upLevel('bulk'));
+const enterMs       = () => MARKET_UPGRADES.buzz.effect(upLevel('buzz'));
 const MARKET_ROAMERS = 6;     // how many customers wander the crossroads (visual)
 const WORKER_EMOJIS  = ['🐱', '🐶', '🐰', '🐻', '🦊', '🐼', '🐯', '🐸'];
 
@@ -187,6 +201,7 @@ const G = {
   taughtAutomate: false,       // true once the player automates their first stall — stops the teaching highlights
   taughtPan: false,            // true once the pan-fried unlock has been pointed out
   quest: 0,                    // index into QUESTS (the current tutorial goal)
+  upgrades: {},                // Market Board upgrade levels, keyed by MARKET_UPGRADES key
   stats: { handMade: 0, restocks: 0 },   // dishes finished by hand + supply restocks (for quests)
   pending: {},                 // per-stall count of roamers who've walked in, waiting to be seated
   enterAcc: {},                // per-stall arrival timer (each stall draws customers independently)
@@ -201,10 +216,11 @@ const openStalls = () => STALL_ORDER.filter(id => STALLS[id].state === 'open');
 // Returns a stall id that just got an arrival (for the market's enter animation), else null.
 function tickArrivals(dtMs) {
   let entered = null;
+  const interval = enterMs();
   for (const id of openStalls()) {
     G.enterAcc[id] = (G.enterAcc[id] || 0) + dtMs;
-    if (G.enterAcc[id] < ENTER_MS) continue;
-    G.enterAcc[id] -= ENTER_MS;
+    if (G.enterAcc[id] < interval) continue;
+    G.enterAcc[id] -= interval;
     // cap pending so an unattended stall doesn't bank infinite customers (its queue is QUEUE_MAX)
     G.pending[id] = Math.min(QUEUE_MAX, (G.pending[id] || 0) + 1);
     entered = id;
@@ -570,6 +586,7 @@ class Stall extends Phaser.Scene {
     this.traineeDot = null;
     this.stations = null; this.slots = null; this.bufviews = null;
     this.restockModal = null;
+    this.board = null; this.boardBtn = null;
 
     this.tray = [];        // finished-dish tokens waiting on the pickup tray
     this.lineItems = this.stall.autos.map(() => null);   // per-workstation in-progress AUTO item ({prog}) or null
@@ -671,6 +688,8 @@ class Stall extends Phaser.Scene {
     this.add.rectangle(W/2, 72, W, 48, COL.cream).setDepth(50);
     this.backBtn = makeButton(this, 52, 72, 76, 34, COL.brown, '← Market', '13px', 51);
     this.add.text(W/2 + 6, 72, this.cfg.emoji + ' ' + this.cfg.name, { fontFamily:FONT, fontSize:'15px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5).setDepth(51);
+    // HQ-only: the Market Board (market-wide upgrades) lives in the PJ Workshop.
+    if (this.cfg.hq) this.boardBtn = makeButton(this, W-50, 72, 84, 34, COL.amber, '📋 Board', '13px', 51);
   }
 
   // ---------------- Production line: 📦 Storage → step buttons (helper slot beneath each), ----------------
@@ -1184,7 +1203,9 @@ class Stall extends Phaser.Scene {
   // ---------------- Input ----------------
   handleTap(px, py) {
     if (this.restockModal) { this.restockModalTap(px, py); return; }   // modal swallows all other taps
+    if (this.board)        { this.boardTap(px, py); return; }
     if (hitBtn(px, py, this.backBtn)) { this.scene.start('market'); return; }
+    if (this.boardBtn && hitBtn(px, py, this.boardBtn)) { this.openBoard(); return; }
     if (inBox(px, py, this.storage, this.storage.w/2, this.storage.h/2)) { this.doRestock(); return; }
     // trainee card: hire an apprentice, or (once ready) deploy them to a station
     if (inBox(px, py, this.traineeBox, this.traineeBox.halfW, this.traineeBox.halfH)) { this.tapTrainee(); return; }
@@ -1238,13 +1259,14 @@ class Stall extends Phaser.Scene {
   // Apply the purchase (called from the confirmation's Confirm button).
   confirmRestock() {
     if (G.coins < RESTOCK_COST) { this.flashHint('Need ' + RESTOCK_COST + ' 💰 for a full restock'); return; }
+    const amt = restockAmount();
     G.coins -= RESTOCK_COST;
-    G.pantry[this.cfg.ingredient] += RESTOCK_AMOUNT;
+    G.pantry[this.cfg.ingredient] += amt;
     G.stats.restocks += 1;
     this.refreshHud(); this.refreshStorage();
     // a big, deliberate resupply — give it a moment
-    this.floatText(this.storage.x, this.storage.y - 44, '📦 +' + RESTOCK_AMOUNT, COL.green);
-    this.flashHint('📦 Supplies restocked! +' + RESTOCK_AMOUNT + ' ' + INGREDIENTS[this.cfg.ingredient].emoji, 2200);
+    this.floatText(this.storage.x, this.storage.y - 44, '📦 +' + amt, COL.green);
+    this.flashHint('📦 Supplies restocked! +' + amt + ' ' + INGREDIENTS[this.cfg.ingredient].emoji, 2200);
   }
 
   // ---------------- Restock confirmation modal ----------------
@@ -1257,7 +1279,7 @@ class Stall extends Phaser.Scene {
     panel.lineStyle(3, this.cfg.accent, 1).strokeRoundedRect(cx-pw/2, cy-ph/2, pw, ph, 18);
     cont.add(panel);
     cont.add(this.add.text(cx, cy-66, '📦 Restock supplies', { fontFamily:FONT, fontSize:'18px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5));
-    cont.add(this.add.text(cx, cy-34, 'Buy ' + RESTOCK_AMOUNT + ' ' + INGREDIENTS[ing].emoji + ' for ' + RESTOCK_COST + ' 💰', { fontFamily:FONT, fontSize:'15px', color:hex(COL.brown), fontStyle:'700' }).setOrigin(0.5));
+    cont.add(this.add.text(cx, cy-34, 'Buy ' + restockAmount() + ' ' + INGREDIENTS[ing].emoji + ' for ' + RESTOCK_COST + ' 💰', { fontFamily:FONT, fontSize:'15px', color:hex(COL.brown), fontStyle:'700' }).setOrigin(0.5));
     cont.add(this.add.text(cx, cy-8, 'Balance ' + Math.floor(G.coins) + ' 💰  →  ' + (Math.floor(G.coins) - RESTOCK_COST) + ' 💰', { fontFamily:FONT, fontSize:'12px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5));
     // buttons
     const by = cy + 48, bw = 124, bh = 44, gap = 12;
@@ -1280,6 +1302,60 @@ class Stall extends Phaser.Scene {
     const on = (bx) => Math.abs(px - bx) <= m.bw/2 && Math.abs(py - m.by) <= m.bh/2;
     if (on(m.confirmX)) { this.closeRestockConfirm(); this.confirmRestock(); return; }
     this.closeRestockConfirm();   // Cancel button, or tap anywhere outside
+  }
+
+  // ---------------- Market Board (HQ): market-wide upgrades ----------------
+  openBoard() {
+    const keys = Object.keys(MARKET_UPGRADES);
+    const cx = W/2, rowH = 76, top = 150, pw = 320, ph = 70 + keys.length*rowH + 30;
+    const cont = this.add.container(0, 0).setDepth(95);
+    cont.add(this.add.rectangle(W/2, H/2, W, H, 0x2A211B, 0.55));
+    const panel = this.add.graphics();
+    panel.fillStyle(COL.card, 1).fillRoundedRect(cx-pw/2, top, pw, ph, 18);
+    panel.lineStyle(3, COL.amber, 1).strokeRoundedRect(cx-pw/2, top, pw, ph, 18);
+    cont.add(panel);
+    cont.add(this.add.text(cx, top+26, '📋 Market Board', { fontFamily:FONT, fontSize:'19px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5));
+    cont.add(this.add.text(cx, top+48, 'market-wide upgrades — buff every stall', { fontFamily:FONT, fontSize:'11px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5));
+    const rows = [];
+    keys.forEach((key, i) => {
+      const u = MARKET_UPGRADES[key], ry = top + 70 + i*rowH + rowH/2;
+      const lv = upLevel(key), maxed = upMaxed(key), cost = upCost(key), afford = G.coins >= cost;
+      const rowBg = this.add.graphics();
+      rowBg.fillStyle(COL.cream, 0.9).fillRoundedRect(cx-pw/2+14, ry-rowH/2+6, pw-28, rowH-12, 12);
+      cont.add(rowBg);
+      cont.add(this.add.text(cx-pw/2+30, ry-14, u.emoji + ' ' + u.name + '  Lv ' + lv + '/' + u.max, { fontFamily:FONT, fontSize:'14px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0,0.5));
+      cont.add(this.add.text(cx-pw/2+30, ry+8, u.desc, { fontFamily:FONT, fontSize:'10px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0,0.5));
+      // buy button on the right
+      const bw=78, bh=40, bx=cx+pw/2-30-bw/2;
+      const fill = maxed ? COL.btnOff : (afford ? COL.btn : COL.btnOff);
+      cont.add(this.add.rectangle(bx, ry, bw, bh, fill).setStrokeStyle(2, COL.brown));
+      cont.add(this.add.text(bx, ry, maxed ? 'MAX' : (cost+'💰'), { fontFamily:FONT, fontSize:'13px', color:'#FFFFFF', fontStyle:'800' }).setOrigin(0.5));
+      rows.push({ key, bx, ry, bw, bh, maxed });
+    });
+    const cy2 = top+ph-22;
+    cont.add(this.add.text(cx, cy2, 'tap outside to close', { fontFamily:FONT, fontSize:'11px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5));
+    this.board = { cont, rows };
+  }
+
+  closeBoard() { if (this.board) { this.board.cont.destroy(); this.board = null; } }
+
+  boardTap(px, py) {
+    for (const r of this.board.rows) {
+      if (r.maxed) continue;
+      if (Math.abs(px - r.bx) <= r.bw/2 && Math.abs(py - r.ry) <= r.bh/2) { this.buyUpgrade(r.key); return; }
+    }
+    this.closeBoard();   // tap outside any buy button closes
+  }
+
+  buyUpgrade(key) {
+    const cost = upCost(key);
+    if (upMaxed(key)) return;
+    if (G.coins < cost) { this.flashHint('Need ' + cost + ' 💰 for ' + MARKET_UPGRADES[key].name); return; }
+    G.coins -= cost;
+    G.upgrades[key] = upLevel(key) + 1;
+    this.refreshHud();
+    this.closeBoard(); this.openBoard();   // reopen to show new level/cost
+    this.flashHint(MARKET_UPGRADES[key].emoji + ' ' + MARKET_UPGRADES[key].name + ' → Lv ' + upLevel(key), 1800);
   }
 
   // Trainee slot: hire an apprentice when empty; once they've mastered the recipe,
