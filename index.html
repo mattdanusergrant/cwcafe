@@ -89,8 +89,7 @@ const RECIPES = {
   boiled:   { name:'Boiled',    emoji:'🥟', value:6,  steps:['wrap','fill','boil'] },
   panfried: { name:'Pan-fried', emoji:'🥟', value:11, steps:['wrap','fill','fry'] },
   milktea:  { name:'Milk Tea',  emoji:'🧋', value:8,  steps:['brew','pour','pearls'] },
-  pajamas:  { name:'Helper PJs', emoji:'🧦', value:10, steps:['cut','sew','fold'] },
-  plush:    { name:'Plushies',   emoji:'🧸', value:16, steps:['cut','fill','sew'] },   // HQ's second merch line (🧶 Loom)
+  pajamas:  { name:'Pajamas',   emoji:'🧦', value:10, steps:['cut','sew','fold'] },   // (legacy; CW HQ no longer crafts)
   noodlesoup:{ name:'Noodle Soup', emoji:'🍜', value:9, steps:['boil','fill','pour'] },
 };
 
@@ -99,12 +98,12 @@ const RECIPES = {
 //   recipe: the recipe available from the start.
 //   unlock: an optional equipment purchase that adds a second recipe.
 const STALLS = {
-  // 🏪 CW HQ is your home base: a general merch stall (its merch doubles as the PJs
-  //    you stock for your helpers) AND the management hub (Market Board + Cosmetics).
-  //    It's the starting stall where the tutorial runs. A 🧶 Loom unlocks a 2nd merch line.
-  pj:       { name:'CW HQ', emoji:'🏪', accent:COL.blue,  ingredient:'cloth', recipe:'pajamas', state:'open', hq:true,
-              unlock:{ recipe:'plush', cost:300, equip:'🧶 Loom' } },
-  dumpling: { name:'Dumpling Stall', emoji:'🥟', accent:COL.red,   ingredient:'dough', recipe:'boiled',  state:'locked', cost:150,
+  // 🏪 CW HQ — your empire home base. It does NOT craft: it's a passive merch shop
+  //    (shoppers wander in and buy stocked merch) plus the management hub (Market
+  //    Board + Helper PJ cosmetics + stats). See the HQ scene + MERCH below.
+  pj:       { name:'CW HQ', emoji:'🏪', accent:COL.blue,  ingredient:'cloth', recipe:'pajamas', state:'open', hq:true },
+  // The Dumpling Stall is the starting CRAFT stall, where the cook→train→automate tutorial runs.
+  dumpling: { name:'Dumpling Stall', emoji:'🥟', accent:COL.red,   ingredient:'dough', recipe:'boiled',  state:'open', start:true,
               unlock:{ recipe:'panfried', cost:250, equip:'🍳 Pan' } },
   boba:     { name:'Boba Stall',     emoji:'🧋', accent:COL.pink,  ingredient:'tea',   recipe:'milktea', state:'locked', cost:250 },
   noodle:   { name:'Noodle Stall',   emoji:'🍜', accent:COL.amber, ingredient:'broth', recipe:'noodlesoup', state:'locked', cost:500 },
@@ -159,6 +158,19 @@ const HELPER_SKINS = {
   mythic:  { name:'Mythic Beasts', blurb:'Legendary loungewear', cost:300, accent:COL.amber, set:['🐉','🦄','🦅','🐲','🦚','🦩','🦢','🦦'], premium:true },
 };
 const SKIN_ORDER = ['classic', 'sea', 'farm', 'forest', 'mythic'];
+
+// ---- CW HQ merch: the only "gameplay" at HQ, kept deliberately tiny. Shoppers
+//      wander in and buy a random in-stock item; you tap a shelf to restock it to
+//      cap (for coins), or to unlock a new item. price = paid per sale, restock =
+//      coins to refill to cap (~2x margin), unlock = one-time coins to add it. ----
+const MERCH = {
+  tote:  { emoji:'🛍️', name:'Tote Bag', price:6,  cap:10, restock:30,  unlock:0 },
+  mug:   { emoji:'☕',  name:'CW Mug',   price:10, cap:10, restock:50,  unlock:0 },
+  cap:   { emoji:'🧢',  name:'CW Cap',   price:16, cap:10, restock:80,  unlock:300 },
+  tee:   { emoji:'👕',  name:'CW Tee',   price:22, cap:10, restock:110, unlock:500 },
+  plush: { emoji:'🧸',  name:'Plushie',  price:34, cap:8,  restock:130, unlock:800 },
+};
+const MERCH_ORDER = ['tote', 'mug', 'cap', 'tee', 'plush'];
 
 /* ============================================================================
    Game state (shared across scenes) + pure helpers
@@ -222,6 +234,9 @@ const G = {
   nextGemAt: GEM_EVERY,        // lifetimeServed threshold for the next free 💎
   skinsOwned: ['classic'],     // helper PJ sets the player has unlocked
   equipped: { helperSkin: 'classic' },   // cosmetics applied live at draw time
+  merch: { unlocked: ['tote', 'mug'], stock: { tote: 10, mug: 10 } },   // CW HQ merch shop
+  merchAcc: 0,                 // fractional timer for passive merch sales
+  merchSold: 0,                // lifetime merch units sold (HUD/stats)
   pantry: { dough: START_STOCK, tea: START_STOCK, broth: START_STOCK, cloth: START_STOCK },
   wageBucket: 0,               // fractional wages owed
   workerSeq: 0,                // assigns each new helper their emoji/name/speed
@@ -236,8 +251,9 @@ const G = {
   enterAcc: {},                // per-stall arrival timer (each stall draws customers independently)
 };
 
-// Open stalls a roaming customer might wander into.
-const openStalls = () => STALL_ORDER.filter(id => STALLS[id].state === 'open');
+// Open CRAFT stalls a roaming food customer might wander into (the HQ is a merch
+// shop with its own shoppers, so it's excluded here).
+const openStalls = () => STALL_ORDER.filter(id => STALLS[id].state === 'open' && !STALLS[id].hq);
 
 // Customer arrivals: EACH open stall has its OWN independent (slow) arrival rate,
 // so opening more stalls draws more total customers — it does not slow the others.
@@ -260,19 +276,19 @@ function tickArrivals(dtMs) {
 // Sequential tutorial quests — each pays a coin reward, pacing the early game:
 // cook by hand → hire (forced) → train → assign → run dry & restock → expand.
 const QUESTS = [
-  { text:'Sew 3 Helper PJs by hand', reward:50, emoji:'🧦',
+  { text:'Make 3 dumplings by hand', reward:50, emoji:'🥟',
     prog:()=>({ n:Math.min(G.stats.handMade,3), of:3 }), done:()=>G.stats.handMade >= 3 },
   { text:'Hire your first apprentice', reward:60, emoji:'🐾',
     done:()=>G.workerSeq > 0 },
   { text:'Train the apprentice — keep crafting', reward:80, emoji:'🎓',
-    prog:()=>{ const t = G.stalls.pj.trainee; const m = Math.floor(t ? wMastery(t,'pj') : 100); return { n:Math.min(m,100), of:100 }; },
+    prog:()=>{ const t = G.stalls.dumpling.trainee; const m = Math.floor(t ? wMastery(t,'dumpling') : 100); return { n:Math.min(m,100), of:100 }; },
     done:()=>STALL_ORDER.some(id => wTrained(G.stalls[id].trainee, id) || G.stalls[id].autos.some(Boolean)) },
   { text:'Assign the trained apprentice to a station', reward:120, emoji:'🤖',
     done:()=>STALL_ORDER.some(id => G.stalls[id].autos.some(Boolean)) },
   { text:'Out of supplies! Restock (📦100 for 💰100)', reward:100, emoji:'📦',
     done:()=>G.stats.restocks >= 1 },
-  { text:'Expand! Open the Dumpling Stall', reward:150, emoji:'🥟',
-    done:()=>STALLS.dumpling.state === 'open' },
+  { text:'Expand! Open the Boba Stall', reward:150, emoji:'🧋',
+    done:()=>STALLS.boba.state === 'open' },
 ];
 const currentQuest = () => G.quest < QUESTS.length ? QUESTS[G.quest] : null;
 // If the current quest is satisfied, pay its reward, advance, and return it (for a toast).
@@ -344,6 +360,27 @@ function tickPassive(dtMs, exceptId) {
       addServed(1);
     }
   }
+}
+
+// CW HQ merch: sell one random in-stock item (returns the sale, or null if nothing
+// is stocked). Shared by the HQ scene's shoppers and the passive background tick.
+function sellMerch() {
+  const avail = MERCH_ORDER.filter(id => G.merch.unlocked.includes(id) && (G.merch.stock[id] || 0) > 0);
+  if (!avail.length) return null;
+  const id = avail[Math.floor(Math.random() * avail.length)];
+  G.merch.stock[id] -= 1;
+  G.coins += MERCH[id].price;
+  G.merchSold += 1;
+  const gem = addServed(1);
+  return { id, price: MERCH[id].price, gem };
+}
+
+// Passive merch income — runs in the Market/Stall scenes (the HQ scene drives its
+// own sales with visible shoppers, so it skips this). Cadence tracks Market Buzz.
+function tickMerch(dtMs) {
+  G.merchAcc += dtMs;
+  const iv = enterMs();
+  while (G.merchAcc >= iv) { G.merchAcc -= iv; if (!sellMerch()) { G.merchAcc = 0; break; } }
 }
 
 /* ============================================================================
@@ -443,11 +480,11 @@ class Market extends Phaser.Scene {
     this.qbBg.lineStyle(2, COL.amber, 1).strokeRoundedRect(W/2-w/2, 92-h/2, w, h, 10);
   }
 
-  // Pulse the HQ (starting) tent until the very first item has been made by hand.
+  // Pulse the starting craft tent (Dumpling Stall) until the first dish is made by hand.
   drawHighlight(time) {
     const g = this.hl; g.clear();
     if (G.firstCookDone) return;
-    const c = this.cards.find(c => STALLS[c.id].hq);
+    const c = this.cards.find(c => STALLS[c.id].start);
     if (!c) return;
     const puls = 0.5 + 0.5 * Math.sin(time / 250);
     g.lineStyle(3 + 2*puls, COL.btn, 0.5 + 0.4*puls);
@@ -524,6 +561,10 @@ class Market extends Phaser.Scene {
     for (const c of this.cards) {
       const cfg = c.cfg;
       this.drawTent(c);
+      if (cfg.hq) {                                  // the HQ tent: merch shop + management
+        c.status.setText('🏪 manage & merch · sold ' + G.merchSold).setColor(hex(COL.dim));
+        continue;
+      }
       if (cfg.state === 'open') {
         const s = G.stalls[c.id], ing = cfg.ingredient, r = recipeOf(c.id);
         let txt;
@@ -556,7 +597,8 @@ class Market extends Phaser.Scene {
     // tap a tent: open → enter; locked → buy & open
     for (const c of this.cards) {
       if (px < c.x - c.hw || px > c.x + c.hw || py < c.y - c.hh - 6 || py > c.y + c.hh) continue;
-      if (c.cfg.state === 'open') this.scene.start('stall', { id: c.id });
+      if (c.cfg.hq) this.scene.start('hq');
+      else if (c.cfg.state === 'open') this.scene.start('stall', { id: c.id });
       else this.tryOpenStall(c);
       return;
     }
@@ -575,6 +617,7 @@ class Market extends Phaser.Scene {
   update(time, delta) {
     tickWages(delta);
     tickPassive(delta, null);   // every automated stall earns while you're in the market
+    tickMerch(delta);           // CW HQ merch sells in the background too
     const entered = tickArrivals(delta);          // a roamer wandered into a stall?
     if (entered) this.sendRoamerToTent(entered);  // walk one of our shoppers into that tent
     const q = tryCompleteQuest();
@@ -625,7 +668,6 @@ class Stall extends Phaser.Scene {
     this.traineeDot = null;
     this.stations = null; this.slots = null; this.bufviews = null;
     this.restockModal = null;
-    this.board = null; this.cosmetics = null; this.manage = null; this.manageBtn = null;
 
     this.tray = [];        // finished-dish tokens waiting on the pickup tray
     this.lineItems = this.stall.autos.map(() => null);   // per-workstation in-progress AUTO item ({prog}) or null
@@ -727,8 +769,6 @@ class Stall extends Phaser.Scene {
     this.add.rectangle(W/2, 72, W, 48, COL.cream).setDepth(50);
     this.backBtn = makeButton(this, 52, 72, 76, 34, COL.brown, '← Market', '13px', 51);
     this.add.text(W/2 + 6, 72, this.cfg.emoji + ' ' + this.cfg.name, { fontFamily:FONT, fontSize:'15px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5).setDepth(51);
-    // HQ-only: a Manage button opens CW HQ's hub (Market Board + Helper PJs cosmetics).
-    if (this.cfg.hq) this.manageBtn = makeButton(this, W-54, 72, 96, 34, COL.amber, '🛠️ Manage', '13px', 51);
   }
 
   // ---------------- Production line: 📦 Storage → step buttons (helper slot beneath each), ----------------
@@ -1243,11 +1283,7 @@ class Stall extends Phaser.Scene {
   // ---------------- Input ----------------
   handleTap(px, py) {
     if (this.restockModal) { this.restockModalTap(px, py); return; }   // modal swallows all other taps
-    if (this.board)        { this.boardTap(px, py); return; }
-    if (this.cosmetics)    { this.cosmeticsTap(px, py); return; }
-    if (this.manage)       { this.manageTap(px, py); return; }
     if (hitBtn(px, py, this.backBtn)) { this.scene.start('market'); return; }
-    if (this.manageBtn && hitBtn(px, py, this.manageBtn)) { this.openManage(); return; }
     if (inBox(px, py, this.storage, this.storage.w/2, this.storage.h/2)) { this.doRestock(); return; }
     // trainee card: hire an apprentice, or (once ready) deploy them to a station
     if (inBox(px, py, this.traineeBox, this.traineeBox.halfW, this.traineeBox.halfH)) { this.tapTrainee(); return; }
@@ -1346,159 +1382,6 @@ class Stall extends Phaser.Scene {
     this.closeRestockConfirm();   // Cancel button, or tap anywhere outside
   }
 
-  // ---------------- Market Board (HQ): market-wide upgrades ----------------
-  openBoard() {
-    const keys = Object.keys(MARKET_UPGRADES);
-    const cx = W/2, rowH = 76, top = 150, pw = 320, ph = 70 + keys.length*rowH + 30;
-    const cont = this.add.container(0, 0).setDepth(95);
-    cont.add(this.add.rectangle(W/2, H/2, W, H, 0x2A211B, 0.55));
-    const panel = this.add.graphics();
-    panel.fillStyle(COL.card, 1).fillRoundedRect(cx-pw/2, top, pw, ph, 18);
-    panel.lineStyle(3, COL.amber, 1).strokeRoundedRect(cx-pw/2, top, pw, ph, 18);
-    cont.add(panel);
-    cont.add(this.add.text(cx, top+26, '📋 Market Board', { fontFamily:FONT, fontSize:'19px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5));
-    cont.add(this.add.text(cx, top+48, 'market-wide upgrades — buff every stall', { fontFamily:FONT, fontSize:'11px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5));
-    const rows = [];
-    keys.forEach((key, i) => {
-      const u = MARKET_UPGRADES[key], ry = top + 70 + i*rowH + rowH/2;
-      const lv = upLevel(key), maxed = upMaxed(key), cost = upCost(key), afford = G.coins >= cost;
-      const rowBg = this.add.graphics();
-      rowBg.fillStyle(COL.cream, 0.9).fillRoundedRect(cx-pw/2+14, ry-rowH/2+6, pw-28, rowH-12, 12);
-      cont.add(rowBg);
-      cont.add(this.add.text(cx-pw/2+30, ry-14, u.emoji + ' ' + u.name + '  Lv ' + lv + '/' + u.max, { fontFamily:FONT, fontSize:'14px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0,0.5));
-      cont.add(this.add.text(cx-pw/2+30, ry+8, u.desc, { fontFamily:FONT, fontSize:'10px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0,0.5));
-      // buy button on the right
-      const bw=78, bh=40, bx=cx+pw/2-30-bw/2;
-      const fill = maxed ? COL.btnOff : (afford ? COL.btn : COL.btnOff);
-      cont.add(this.add.rectangle(bx, ry, bw, bh, fill).setStrokeStyle(2, COL.brown));
-      cont.add(this.add.text(bx, ry, maxed ? 'MAX' : (cost+'💰'), { fontFamily:FONT, fontSize:'13px', color:'#FFFFFF', fontStyle:'800' }).setOrigin(0.5));
-      rows.push({ key, bx, ry, bw, bh, maxed });
-    });
-    const cy2 = top+ph-22;
-    cont.add(this.add.text(cx, cy2, 'tap outside to close', { fontFamily:FONT, fontSize:'11px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5));
-    this.board = { cont, rows };
-  }
-
-  closeBoard() { if (this.board) { this.board.cont.destroy(); this.board = null; } }
-
-  boardTap(px, py) {
-    for (const r of this.board.rows) {
-      if (r.maxed) continue;
-      if (Math.abs(px - r.bx) <= r.bw/2 && Math.abs(py - r.ry) <= r.bh/2) { this.buyUpgrade(r.key); return; }
-    }
-    this.closeBoard();   // tap outside any buy button closes
-  }
-
-  buyUpgrade(key) {
-    const cost = upCost(key);
-    if (upMaxed(key)) return;
-    if (G.coins < cost) { this.flashHint('Need ' + cost + ' 💰 for ' + MARKET_UPGRADES[key].name); return; }
-    G.coins -= cost;
-    G.upgrades[key] = upLevel(key) + 1;
-    this.refreshHud();
-    this.closeBoard(); this.openBoard();   // reopen to show new level/cost
-    this.flashHint(MARKET_UPGRADES[key].emoji + ' ' + MARKET_UPGRADES[key].name + ' → Lv ' + upLevel(key), 1800);
-  }
-
-  // ---------------- CW HQ management hub ----------------
-  // The HQ's home-base menu: a stats readout + entry points to the two management
-  // surfaces — the Market Board (coin upgrades) and Helper PJs (gem cosmetics).
-  openManage() {
-    const cx = W/2, top = 150, pw = 320, ph = 300;
-    const cont = this.add.container(0, 0).setDepth(95);
-    cont.add(this.add.rectangle(W/2, H/2, W, H, 0x2A211B, 0.55));
-    const panel = this.add.graphics();
-    panel.fillStyle(COL.card, 1).fillRoundedRect(cx-pw/2, top, pw, ph, 18);
-    panel.lineStyle(3, COL.amber, 1).strokeRoundedRect(cx-pw/2, top, pw, ph, 18);
-    cont.add(panel);
-    cont.add(this.add.text(cx, top+26, '🏪 CW HQ', { fontFamily:FONT, fontSize:'20px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5));
-    cont.add(this.add.text(cx, top+48, 'Home base — run the whole market', { fontFamily:FONT, fontSize:'11px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5));
-    const sold = STALL_ORDER.reduce((a, id) => a + G.stalls[id].served, 0);
-    cont.add(this.add.text(cx, top+82, '💰 ' + Math.floor(G.coins) + '     💎 ' + G.gems, { fontFamily:FONT, fontSize:'15px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5));
-    cont.add(this.add.text(cx, top+104, '📦 sold ' + sold + '     🐾 crew ' + totalWorkers(), { fontFamily:FONT, fontSize:'12px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5));
-    const bw = 260, bh = 46, boardY = top+158, cosmY = top+216;
-    cont.add(this.add.rectangle(cx, boardY, bw, bh, COL.btn).setStrokeStyle(2, COL.brown));
-    cont.add(this.add.text(cx, boardY, '📋 Market Board — upgrades', { fontFamily:FONT, fontSize:'14px', color:'#FFFFFF', fontStyle:'800' }).setOrigin(0.5));
-    cont.add(this.add.rectangle(cx, cosmY, bw, bh, COL.pink).setStrokeStyle(2, COL.brown));
-    cont.add(this.add.text(cx, cosmY, '✨ Helper PJs — cosmetics', { fontFamily:FONT, fontSize:'14px', color:'#FFFFFF', fontStyle:'800' }).setOrigin(0.5));
-    cont.add(this.add.text(cx, top+ph-22, 'tap outside to close', { fontFamily:FONT, fontSize:'11px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5));
-    this.manage = { cont, cx, bw, bh, boardY, cosmY };
-  }
-
-  closeManage() { if (this.manage) { this.manage.cont.destroy(); this.manage = null; } }
-
-  manageTap(px, py) {
-    const m = this.manage, on = by => Math.abs(px - m.cx) <= m.bw/2 && Math.abs(py - by) <= m.bh/2;
-    if (on(m.boardY)) { this.closeManage(); this.openBoard(); return; }
-    if (on(m.cosmY))  { this.closeManage(); this.openCosmetics(); return; }
-    this.closeManage();   // tap outside any button closes
-  }
-
-  // ---------------- Helper PJs (cosmetics shop) ----------------
-  // Stocked at the HQ: PJ/outfit sets for your crew. Bought with 💎 gems, equipped
-  // live. Pure cosmetic — no gameplay effect, so it never gates progress.
-  openCosmetics() {
-    const keys = SKIN_ORDER, cx = W/2, rowH = 62, top = 120, pw = 330, ph = 72 + keys.length*rowH + 44;
-    const cont = this.add.container(0, 0).setDepth(96);
-    cont.add(this.add.rectangle(W/2, H/2, W, H, 0x2A211B, 0.55));
-    const panel = this.add.graphics();
-    panel.fillStyle(COL.card, 1).fillRoundedRect(cx-pw/2, top, pw, ph, 18);
-    panel.lineStyle(3, COL.pink, 1).strokeRoundedRect(cx-pw/2, top, pw, ph, 18);
-    cont.add(panel);
-    cont.add(this.add.text(cx, top+24, '✨ Helper PJs & Looks', { fontFamily:FONT, fontSize:'18px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5));
-    cont.add(this.add.text(cx, top+46, 'Dress your crew — pure style, no perks  ·  💎 ' + G.gems, { fontFamily:FONT, fontSize:'11px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5));
-    const rows = [];
-    keys.forEach((key, i) => {
-      const s = HELPER_SKINS[key], ry = top + 72 + i*rowH + rowH/2;
-      const owned = G.skinsOwned.includes(key), equipped = G.equipped.helperSkin === key, accent = s.premium ? COL.amber : s.accent;
-      const rb = this.add.graphics();
-      rb.fillStyle(equipped ? accent : COL.cream, equipped ? 0.18 : 0.9).fillRoundedRect(cx-pw/2+14, ry-rowH/2+5, pw-28, rowH-10, 12);
-      rb.lineStyle(equipped ? 2.5 : 1.5, accent, equipped ? 1 : 0.5).strokeRoundedRect(cx-pw/2+14, ry-rowH/2+5, pw-28, rowH-10, 12);
-      cont.add(rb);
-      cont.add(this.add.text(cx-pw/2+28, ry, s.set.slice(0, 3).join(' '), { fontSize:'20px' }).setOrigin(0, 0.5));
-      cont.add(this.add.text(cx-pw/2+108, ry-9, (s.premium ? '✨ ' : '') + s.name, { fontFamily:FONT, fontSize:'12.5px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0, 0.5));
-      cont.add(this.add.text(cx-pw/2+108, ry+12, s.blurb, { fontFamily:FONT, fontSize:'9.5px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0, 0.5));
-      const bw = 86, bh = 38, bx = cx + pw/2 - 28 - bw/2;
-      let label, fill;
-      if (equipped)    { label = '✓ On';            fill = COL.green; }
-      else if (owned)  { label = 'Equip';           fill = COL.btn; }
-      else             { label = '💎 ' + s.cost;    fill = G.gems >= s.cost ? COL.amber : COL.btnOff; }
-      cont.add(this.add.rectangle(bx, ry, bw, bh, fill).setStrokeStyle(2, COL.brown));
-      cont.add(this.add.text(bx, ry, label, { fontFamily:FONT, fontSize:'13px', color:'#FFFFFF', fontStyle:'800' }).setOrigin(0.5));
-      rows.push({ key, bx, ry, bw, bh });
-    });
-    const gy = top + ph - 26, gbw = 210, gbh = 36;
-    cont.add(this.add.rectangle(cx, gy, gbw, gbh, COL.amber).setStrokeStyle(2, COL.brown));
-    cont.add(this.add.text(cx, gy, '＋ Get 100 💎  ·  demo', { fontFamily:FONT, fontSize:'12px', color:'#FFFFFF', fontStyle:'800' }).setOrigin(0.5));
-    this.cosmetics = { cont, rows, getGems: { bx: cx, by: gy, bw: gbw, bh: gbh } };
-  }
-
-  closeCosmetics() { if (this.cosmetics) { this.cosmetics.cont.destroy(); this.cosmetics = null; } }
-
-  cosmeticsTap(px, py) {
-    const m = this.cosmetics, g = m.getGems;
-    if (Math.abs(px - g.bx) <= g.bw/2 && Math.abs(py - g.by) <= g.bh/2) {   // demo "buy gems" (stands in for an IAP)
-      G.gems += 100; this.closeCosmetics(); this.openCosmetics();
-      this.flashHint('＋100 💎 added (demo stand-in for an in-app purchase)'); return;
-    }
-    for (const r of m.rows) {
-      if (Math.abs(px - r.bx) <= r.bw/2 && Math.abs(py - r.ry) <= r.bh/2) { this.buySkin(r.key); return; }
-    }
-    this.closeCosmetics();   // tap outside closes
-  }
-
-  // Buy (if needed) and equip a PJ set; re-skins the crew instantly.
-  buySkin(key) {
-    const s = HELPER_SKINS[key];
-    if (G.equipped.helperSkin === key) return;                  // already on
-    if (G.skinsOwned.includes(key)) { G.equipped.helperSkin = key; }
-    else if (G.gems >= s.cost) { G.gems -= s.cost; G.skinsOwned.push(key); G.equipped.helperSkin = key; }
-    else { this.flashHint('Need ' + s.cost + ' 💎 — earn them by selling, or tap Get 💎'); return; }
-    this.closeCosmetics(); this.openCosmetics();
-    this.refreshWorkforce();                                    // re-skin helpers shown in this stall
-    this.flashHint('Crew now wearing ' + s.name + ' ' + s.set[0]);
-  }
-
   // Trainee slot: hire an apprentice when empty; once they've mastered the recipe,
   // tap the ready apprentice to deploy them (free) onto the first open line station.
   tapTrainee() {
@@ -1540,6 +1423,7 @@ class Stall extends Phaser.Scene {
     if (!this.tutorialFrozen()) {
       tickWages(delta);
       tickPassive(delta, this.id);   // other automated stalls keep earning while you're here
+      tickMerch(delta);              // CW HQ merch keeps selling in the background
       tickArrivals(delta);           // roamers wander into stalls (this one + others) over time
       this.stations.forEach(st => { if (st.cd > 0) st.cd = Math.max(0, st.cd - delta); });   // manual button cooldowns
       this.tickAutoStations(delta);  // staffed workstations advance + move items through buffers
@@ -1574,13 +1458,355 @@ class Stall extends Phaser.Scene {
 }
 function queueX(i) { return W/2 + (QUEUE_DX[i] || 0); }
 
+/* ============================================================================
+   HQ SCENE — CW HQ: your empire home base. No crafting. Two simple things:
+     • a passive merch shop — shoppers wander in and buy a random in-stock item;
+       you tap a shelf to restock it to cap, or to unlock a new merch line.
+     • the management hub — 🛠️ Manage opens the Market Board (coin upgrades) and
+       Helper PJs (gem cosmetics), plus a stats readout.
+   ========================================================================== */
+const HQ_DOOR = { x: W/2, y: 120 };
+
+class HQ extends Phaser.Scene {
+  constructor() { super('hq'); }
+
+  create() {
+    this.cfg = STALLS.pj;
+    this.board = null; this.cosmetics = null; this.manage = null;
+    this.shoppers = [];
+    this.spawnAcc = enterMs() * 0.4;
+
+    this.drawRoom();
+    this.buildHud();
+    this.buildShelves();
+    this.buildHintPill();
+    this.input.on('pointerdown', p => this.handleTap(p.x, p.y));
+    this.refreshAll();
+  }
+
+  // ---------------- Room ----------------
+  drawRoom() {
+    const g = this.add.graphics().setDepth(0), t = 38;
+    for (let yy = 96; yy < H; yy += t)
+      for (let xx = 0; xx < W; xx += t) {
+        const alt = (Math.floor(xx/t) + Math.floor(yy/t)) % 2 === 0;
+        g.fillStyle(alt ? COL.floor : COL.floorAlt, 1).fillRect(xx, yy, t, t);
+      }
+    g.fillStyle(COL.wall, 1);
+    g.fillRect(0, 96, W, 8);
+    g.fillRect(0, H-8, W, 8);
+    g.fillStyle(COL.floor, 1).fillRect(HQ_DOOR.x-38, 96, 76, 8);                  // top doorway
+    g.fillStyle(COL.tan, 0.5).fillRoundedRect(HQ_DOOR.x-40, 108, 80, 16, 6);      // entry mat
+    g.fillStyle(COL.counter, 1).fillRoundedRect(16, 354, W-32, 22, 9);            // shop counter
+    g.fillStyle(0xFFFFFF, 0.12).fillRoundedRect(16, 354, W-32, 8, 9);
+    this.add.text(24, 138, '🚪 shoppers wander in', { fontFamily:FONT, fontSize:'11px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0,0.5).setDepth(2);
+    this.add.text(W/2, 392, '— merch shelves · tap to restock / unlock —', { fontFamily:FONT, fontSize:'11px', color:hex(COL.dim), fontStyle:'800' }).setOrigin(0.5).setDepth(2);
+  }
+
+  // ---------------- HUD ----------------
+  buildHud() {
+    this.add.rectangle(W/2, 24, W, 48, this.cfg.accent).setDepth(50);
+    this.coinLabel = this.add.text(12, 24, '', { fontFamily:FONT, fontSize:'21px', color:'#FFFFFF', fontStyle:'700' }).setOrigin(0,0.5).setDepth(51);
+    this.statLabel = this.add.text(W-12, 24, '', { fontFamily:FONT, fontSize:'12px', color:'#FFFFFF' }).setOrigin(1,0.5).setDepth(51);
+    this.add.rectangle(W/2, 72, W, 48, COL.cream).setDepth(50);
+    this.backBtn = makeButton(this, 52, 72, 76, 34, COL.brown, '← Market', '13px', 51);
+    this.add.text(W/2 + 6, 72, '🏪 CW HQ', { fontFamily:FONT, fontSize:'15px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5).setDepth(51);
+    this.manageBtn = makeButton(this, W-54, 72, 96, 34, COL.amber, '🛠️ Manage', '13px', 51);
+  }
+
+  refreshHud() {
+    this.coinLabel.setText('💰 ' + Math.floor(G.coins) + '   💎 ' + G.gems);
+    this.statLabel.setText('🛍️ sold ' + G.merchSold);
+  }
+
+  // ---------------- Merch shelves ----------------
+  buildShelves() {
+    const cardW = 168, cardH = 92, gapX = 14, gapY = 12, top = 408;
+    const colX = i => W/2 + ((i % 2 === 0) ? -1 : 1) * (cardW + gapX) / 2;
+    const rowY = i => top + Math.floor(i/2) * (cardH + gapY) + cardH/2;
+    this.shelves = MERCH_ORDER.map((id, i) => {
+      const x = colX(i), y = rowY(i);
+      const bg = this.add.graphics().setDepth(8);
+      const emoji = this.add.text(x - cardW/2 + 26, y - 16, MERCH[id].emoji, { fontSize:'26px' }).setOrigin(0.5).setDepth(9);
+      const name  = this.add.text(x - cardW/2 + 48, y - 26, '', { fontFamily:FONT, fontSize:'12px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0,0.5).setDepth(9);
+      const price = this.add.text(x - cardW/2 + 48, y - 8, '', { fontFamily:FONT, fontSize:'10px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0,0.5).setDepth(9);
+      const meter = this.add.graphics().setDepth(9);
+      const action= this.add.text(x, y + 28, '', { fontFamily:FONT, fontSize:'10.5px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5).setDepth(9);
+      return { id, x, y, w:cardW, h:cardH, bg, emoji, name, price, meter, action };
+    });
+  }
+
+  refreshShelves() {
+    for (const sh of this.shelves) {
+      const m = MERCH[sh.id], unlocked = G.merch.unlocked.includes(sh.id), stock = G.merch.stock[sh.id] || 0;
+      const accent = unlocked ? this.cfg.accent : COL.dim;
+      sh.bg.clear();
+      sh.bg.fillStyle(COL.card, unlocked ? 1 : 0.9).fillRoundedRect(sh.x-sh.w/2, sh.y-sh.h/2, sh.w, sh.h, 14);
+      sh.bg.lineStyle(2.5, accent, unlocked ? 1 : 0.5).strokeRoundedRect(sh.x-sh.w/2, sh.y-sh.h/2, sh.w, sh.h, 14);
+      sh.emoji.setAlpha(unlocked ? 1 : 0.4);
+      sh.name.setText(m.name).setColor(hex(unlocked ? COL.brown : COL.dim));
+      sh.price.setText(unlocked ? '💰' + m.price + ' each' : '🔒 locked');
+      const mw = sh.w - 96, mx = sh.x - sh.w/2 + 48, my = sh.y + 8;
+      sh.meter.clear();
+      if (unlocked) {
+        sh.meter.fillStyle(COL.cream, 1).fillRoundedRect(mx, my, mw, 7, 3);
+        const c = stock === 0 ? COL.red : (stock <= 2 ? COL.amber : COL.green);
+        sh.meter.fillStyle(c, 1).fillRoundedRect(mx, my, mw * (stock / m.cap), 7, 3);
+      }
+      if (!unlocked)            sh.action.setText('🔓 Unlock · ' + m.unlock + '💰').setColor(hex(G.coins >= m.unlock ? COL.amber : COL.dim));
+      else if (stock >= m.cap)  sh.action.setText('✓ fully stocked (' + stock + '/' + m.cap + ')').setColor(hex(COL.dim));
+      else                      sh.action.setText('📦 Restock · ' + m.restock + '💰  (' + stock + '/' + m.cap + ')').setColor(hex(G.coins >= m.restock ? COL.brown : COL.dim));
+    }
+  }
+
+  tapShelf(id) {
+    const m = MERCH[id];
+    if (!G.merch.unlocked.includes(id)) {                       // unlock a new merch line
+      if (G.coins < m.unlock) { this.flashHint('Need ' + m.unlock + '💰 to add ' + m.name); return; }
+      G.coins -= m.unlock; G.merch.unlocked.push(id); G.merch.stock[id] = m.cap;
+      this.flashHint('🎉 Now selling ' + m.emoji + ' ' + m.name + '!');
+    } else {                                                    // restock to cap
+      const cur = G.merch.stock[id] || 0;
+      if (cur >= m.cap) { this.flashHint(m.name + ' is fully stocked'); return; }
+      if (G.coins < m.restock) { this.flashHint('Need ' + m.restock + '💰 to restock ' + m.name); return; }
+      G.coins -= m.restock; G.merch.stock[id] = m.cap;
+      this.flashHint('📦 Restocked ' + m.name + ' to ' + m.cap);
+    }
+    this.refreshHud(); this.refreshShelves();
+  }
+
+  // ---------------- Shoppers (drive visible merch sales) ----------------
+  tickShoppers(delta) {
+    this.spawnAcc += delta;
+    const iv = enterMs();
+    if (this.spawnAcc >= iv && this.shoppers.length < 4) { this.spawnAcc -= iv; this.spawnShopper(); }
+  }
+
+  spawnShopper() {
+    const face = Phaser.Utils.Array.GetRandom(['🙂','😀','😊','🧑','👩','👨','🧒']);
+    const cont = this.add.container(HQ_DOOR.x, HQ_DOOR.y).setDepth(20);
+    cont.add(this.add.circle(0, 0, 18, COL.card).setStrokeStyle(3, COL.dim));
+    cont.add(this.add.text(0, 0, face, { fontSize:'18px' }).setOrigin(0.5));
+    const bubble = this.add.text(0, -28, '', { fontSize:'16px' }).setOrigin(0.5);
+    cont.add(bubble);
+    const sh = { cont, bubble };
+    this.shoppers.push(sh);
+    const tx = 60 + Math.random() * (W - 120), ty = 250 + Math.random() * 80;
+    this.tweens.add({ targets: cont, x: tx, y: ty, duration: 700, ease:'Sine.InOut', onComplete: () => this.shopperBuys(sh) });
+  }
+
+  shopperBuys(sh) {
+    const sale = sellMerch();
+    if (sale) {
+      sh.bubble.setText(MERCH[sale.id].emoji);
+      this.floatText(sh.cont.x, sh.cont.y - 30, '+' + sale.price + ' 💰', COL.green);
+      if (sale.gem) this.floatText(sh.cont.x, sh.cont.y - 54, '💎 +1', COL.blue);
+    } else {
+      sh.bubble.setText('🤔');                                  // nothing in stock — restock a shelf!
+    }
+    this.tweens.add({ targets: sh.cont, x: HQ_DOOR.x, y: HQ_DOOR.y, alpha: 0, duration: 700, delay: 350, ease:'Sine.In',
+      onComplete: () => { sh.cont.destroy(); this.shoppers = this.shoppers.filter(s => s !== sh); } });
+  }
+
+  floatText(x, y, str, color) {
+    const t = this.add.text(x, y, str, { fontFamily:FONT, fontSize:'18px', color:hex(color), fontStyle:'700' }).setOrigin(0.5).setDepth(45);
+    this.tweens.add({ targets:t, y:y-42, alpha:0, duration:800, ease:'Quad.Out', onComplete:()=>t.destroy() });
+  }
+
+  // ---------------- Hint pill ----------------
+  buildHintPill() {
+    this.hintBg = this.add.graphics().setDepth(70);
+    this.hintTxt = this.add.text(W/2, H-30, '', { fontFamily:FONT, fontSize:'13px', color:hex(COL.brown), fontStyle:'700', align:'center', wordWrap:{ width: 330 } }).setOrigin(0.5).setDepth(71);
+  }
+
+  flashHint(msg, ms = 1700) {
+    this.hintTxt.setText(msg);
+    const w = this.hintTxt.width + 24, h = this.hintTxt.height + 14, y = this.hintTxt.y;
+    this.hintBg.clear();
+    this.hintBg.fillStyle(COL.card, 0.97).fillRoundedRect(W/2-w/2, y-h/2, w, h, 11);
+    this.hintBg.lineStyle(2, COL.amber, 1).strokeRoundedRect(W/2-w/2, y-h/2, w, h, 11);
+    this.time.delayedCall(ms, () => { if (this.hintTxt.text === msg) { this.hintTxt.setText(''); this.hintBg.clear(); } });
+  }
+
+  refreshAll() { this.refreshHud(); this.refreshShelves(); }
+
+  // ---------------- Input ----------------
+  handleTap(px, py) {
+    if (this.cosmetics) { this.cosmeticsTap(px, py); return; }   // modals swallow other taps
+    if (this.board)     { this.boardTap(px, py); return; }
+    if (this.manage)    { this.manageTap(px, py); return; }
+    if (hitBtn(px, py, this.backBtn))   { this.scene.start('market'); return; }
+    if (hitBtn(px, py, this.manageBtn)) { this.openManage(); return; }
+    for (const sh of this.shelves) {
+      if (!inBox(px, py, sh, sh.w/2, sh.h/2)) continue;
+      this.tapShelf(sh.id); return;
+    }
+  }
+
+  update(time, delta) {
+    tickWages(delta);
+    tickPassive(delta, null);    // food stalls keep earning while you manage
+    tickArrivals(delta);         // food customers queue at craft stalls in the background
+    this.tickShoppers(delta);    // HQ merch sells with visible shoppers (so no tickMerch here)
+    const q = tryCompleteQuest();
+    if (q) this.flashHint('✅ ' + q.text + '  ·  +' + q.reward + '💰', 2400);
+    this.refreshHud();
+    this.refreshShelves();
+  }
+
+  // ---------------- Management hub ----------------
+  openManage() {
+    const cx = W/2, top = 150, pw = 320, ph = 300;
+    const cont = this.add.container(0, 0).setDepth(95);
+    cont.add(this.add.rectangle(W/2, H/2, W, H, 0x2A211B, 0.55));
+    const panel = this.add.graphics();
+    panel.fillStyle(COL.card, 1).fillRoundedRect(cx-pw/2, top, pw, ph, 18);
+    panel.lineStyle(3, COL.amber, 1).strokeRoundedRect(cx-pw/2, top, pw, ph, 18);
+    cont.add(panel);
+    cont.add(this.add.text(cx, top+26, '🏪 CW HQ', { fontFamily:FONT, fontSize:'20px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5));
+    cont.add(this.add.text(cx, top+48, 'Home base — run the whole empire', { fontFamily:FONT, fontSize:'11px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5));
+    const food = STALL_ORDER.reduce((a, id) => a + G.stalls[id].served, 0);
+    cont.add(this.add.text(cx, top+82, '💰 ' + Math.floor(G.coins) + '     💎 ' + G.gems, { fontFamily:FONT, fontSize:'15px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5));
+    cont.add(this.add.text(cx, top+104, '🛍️ merch ' + G.merchSold + '   ·   🍽️ food ' + food + '   ·   🐾 ' + totalWorkers(), { fontFamily:FONT, fontSize:'11px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5));
+    const bw = 260, bh = 46, boardY = top+158, cosmY = top+216;
+    cont.add(this.add.rectangle(cx, boardY, bw, bh, COL.btn).setStrokeStyle(2, COL.brown));
+    cont.add(this.add.text(cx, boardY, '📋 Market Board — upgrades', { fontFamily:FONT, fontSize:'14px', color:'#FFFFFF', fontStyle:'800' }).setOrigin(0.5));
+    cont.add(this.add.rectangle(cx, cosmY, bw, bh, COL.pink).setStrokeStyle(2, COL.brown));
+    cont.add(this.add.text(cx, cosmY, '✨ Helper PJs — cosmetics', { fontFamily:FONT, fontSize:'14px', color:'#FFFFFF', fontStyle:'800' }).setOrigin(0.5));
+    cont.add(this.add.text(cx, top+ph-22, 'tap outside to close', { fontFamily:FONT, fontSize:'11px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5));
+    this.manage = { cont, cx, bw, bh, boardY, cosmY };
+  }
+
+  closeManage() { if (this.manage) { this.manage.cont.destroy(); this.manage = null; } }
+
+  manageTap(px, py) {
+    const m = this.manage, on = by => Math.abs(px - m.cx) <= m.bw/2 && Math.abs(py - by) <= m.bh/2;
+    if (on(m.boardY)) { this.closeManage(); this.openBoard(); return; }
+    if (on(m.cosmY))  { this.closeManage(); this.openCosmetics(); return; }
+    this.closeManage();
+  }
+
+  // ---------------- Market Board: market-wide upgrades ----------------
+  openBoard() {
+    const keys = Object.keys(MARKET_UPGRADES);
+    const cx = W/2, rowH = 76, top = 150, pw = 320, ph = 70 + keys.length*rowH + 30;
+    const cont = this.add.container(0, 0).setDepth(95);
+    cont.add(this.add.rectangle(W/2, H/2, W, H, 0x2A211B, 0.55));
+    const panel = this.add.graphics();
+    panel.fillStyle(COL.card, 1).fillRoundedRect(cx-pw/2, top, pw, ph, 18);
+    panel.lineStyle(3, COL.amber, 1).strokeRoundedRect(cx-pw/2, top, pw, ph, 18);
+    cont.add(panel);
+    cont.add(this.add.text(cx, top+26, '📋 Market Board', { fontFamily:FONT, fontSize:'19px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5));
+    cont.add(this.add.text(cx, top+48, 'market-wide upgrades — buff every stall', { fontFamily:FONT, fontSize:'11px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5));
+    const rows = [];
+    keys.forEach((key, i) => {
+      const u = MARKET_UPGRADES[key], ry = top + 70 + i*rowH + rowH/2;
+      const lv = upLevel(key), maxed = upMaxed(key), cost = upCost(key), afford = G.coins >= cost;
+      const rowBg = this.add.graphics();
+      rowBg.fillStyle(COL.cream, 0.9).fillRoundedRect(cx-pw/2+14, ry-rowH/2+6, pw-28, rowH-12, 12);
+      cont.add(rowBg);
+      cont.add(this.add.text(cx-pw/2+30, ry-14, u.emoji + ' ' + u.name + '  Lv ' + lv + '/' + u.max, { fontFamily:FONT, fontSize:'14px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0,0.5));
+      cont.add(this.add.text(cx-pw/2+30, ry+8, u.desc, { fontFamily:FONT, fontSize:'10px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0,0.5));
+      const bw=78, bh=40, bx=cx+pw/2-30-bw/2;
+      const fill = maxed ? COL.btnOff : (afford ? COL.btn : COL.btnOff);
+      cont.add(this.add.rectangle(bx, ry, bw, bh, fill).setStrokeStyle(2, COL.brown));
+      cont.add(this.add.text(bx, ry, maxed ? 'MAX' : (cost+'💰'), { fontFamily:FONT, fontSize:'13px', color:'#FFFFFF', fontStyle:'800' }).setOrigin(0.5));
+      rows.push({ key, bx, ry, bw, bh, maxed });
+    });
+    cont.add(this.add.text(cx, top+ph-22, 'tap outside to close', { fontFamily:FONT, fontSize:'11px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5));
+    this.board = { cont, rows };
+  }
+
+  closeBoard() { if (this.board) { this.board.cont.destroy(); this.board = null; } }
+
+  boardTap(px, py) {
+    for (const r of this.board.rows) {
+      if (r.maxed) continue;
+      if (Math.abs(px - r.bx) <= r.bw/2 && Math.abs(py - r.ry) <= r.bh/2) { this.buyUpgrade(r.key); return; }
+    }
+    this.closeBoard();
+  }
+
+  buyUpgrade(key) {
+    const cost = upCost(key);
+    if (upMaxed(key)) return;
+    if (G.coins < cost) { this.flashHint('Need ' + cost + ' 💰 for ' + MARKET_UPGRADES[key].name); return; }
+    G.coins -= cost;
+    G.upgrades[key] = upLevel(key) + 1;
+    this.refreshHud();
+    this.closeBoard(); this.openBoard();
+    this.flashHint(MARKET_UPGRADES[key].emoji + ' ' + MARKET_UPGRADES[key].name + ' → Lv ' + upLevel(key), 1800);
+  }
+
+  // ---------------- Helper PJs (cosmetics) ----------------
+  openCosmetics() {
+    const keys = SKIN_ORDER, cx = W/2, rowH = 62, top = 120, pw = 330, ph = 72 + keys.length*rowH + 44;
+    const cont = this.add.container(0, 0).setDepth(96);
+    cont.add(this.add.rectangle(W/2, H/2, W, H, 0x2A211B, 0.55));
+    const panel = this.add.graphics();
+    panel.fillStyle(COL.card, 1).fillRoundedRect(cx-pw/2, top, pw, ph, 18);
+    panel.lineStyle(3, COL.pink, 1).strokeRoundedRect(cx-pw/2, top, pw, ph, 18);
+    cont.add(panel);
+    cont.add(this.add.text(cx, top+24, '✨ Helper PJs & Looks', { fontFamily:FONT, fontSize:'18px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0.5));
+    cont.add(this.add.text(cx, top+46, 'Dress your crew — pure style, no perks  ·  💎 ' + G.gems, { fontFamily:FONT, fontSize:'11px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0.5));
+    const rows = [];
+    keys.forEach((key, i) => {
+      const s = HELPER_SKINS[key], ry = top + 72 + i*rowH + rowH/2;
+      const owned = G.skinsOwned.includes(key), equipped = G.equipped.helperSkin === key, accent = s.premium ? COL.amber : s.accent;
+      const rb = this.add.graphics();
+      rb.fillStyle(equipped ? accent : COL.cream, equipped ? 0.18 : 0.9).fillRoundedRect(cx-pw/2+14, ry-rowH/2+5, pw-28, rowH-10, 12);
+      rb.lineStyle(equipped ? 2.5 : 1.5, accent, equipped ? 1 : 0.5).strokeRoundedRect(cx-pw/2+14, ry-rowH/2+5, pw-28, rowH-10, 12);
+      cont.add(rb);
+      cont.add(this.add.text(cx-pw/2+28, ry, s.set.slice(0, 3).join(' '), { fontSize:'20px' }).setOrigin(0, 0.5));
+      cont.add(this.add.text(cx-pw/2+108, ry-9, (s.premium ? '✨ ' : '') + s.name, { fontFamily:FONT, fontSize:'12.5px', color:hex(COL.brown), fontStyle:'800' }).setOrigin(0, 0.5));
+      cont.add(this.add.text(cx-pw/2+108, ry+12, s.blurb, { fontFamily:FONT, fontSize:'9.5px', color:hex(COL.dim), fontStyle:'700' }).setOrigin(0, 0.5));
+      const bw = 86, bh = 38, bx = cx + pw/2 - 28 - bw/2;
+      let label, fill;
+      if (equipped)    { label = '✓ On';            fill = COL.green; }
+      else if (owned)  { label = 'Equip';           fill = COL.btn; }
+      else             { label = '💎 ' + s.cost;    fill = G.gems >= s.cost ? COL.amber : COL.btnOff; }
+      cont.add(this.add.rectangle(bx, ry, bw, bh, fill).setStrokeStyle(2, COL.brown));
+      cont.add(this.add.text(bx, ry, label, { fontFamily:FONT, fontSize:'13px', color:'#FFFFFF', fontStyle:'800' }).setOrigin(0.5));
+      rows.push({ key, bx, ry, bw, bh });
+    });
+    const gy = top + ph - 26, gbw = 210, gbh = 36;
+    cont.add(this.add.rectangle(cx, gy, gbw, gbh, COL.amber).setStrokeStyle(2, COL.brown));
+    cont.add(this.add.text(cx, gy, '＋ Get 100 💎  ·  demo', { fontFamily:FONT, fontSize:'12px', color:'#FFFFFF', fontStyle:'800' }).setOrigin(0.5));
+    this.cosmetics = { cont, rows, getGems: { bx: cx, by: gy, bw: gbw, bh: gbh } };
+  }
+
+  closeCosmetics() { if (this.cosmetics) { this.cosmetics.cont.destroy(); this.cosmetics = null; } }
+
+  cosmeticsTap(px, py) {
+    const m = this.cosmetics, g = m.getGems;
+    if (Math.abs(px - g.bx) <= g.bw/2 && Math.abs(py - g.by) <= g.bh/2) {
+      G.gems += 100; this.closeCosmetics(); this.openCosmetics();
+      this.flashHint('＋100 💎 added (demo stand-in for an in-app purchase)'); return;
+    }
+    for (const r of m.rows) {
+      if (Math.abs(px - r.bx) <= r.bw/2 && Math.abs(py - r.ry) <= r.bh/2) { this.buySkin(r.key); return; }
+    }
+    this.closeCosmetics();
+  }
+
+  buySkin(key) {
+    const s = HELPER_SKINS[key];
+    if (G.equipped.helperSkin === key) return;
+    if (G.skinsOwned.includes(key)) { G.equipped.helperSkin = key; }
+    else if (G.gems >= s.cost) { G.gems -= s.cost; G.skinsOwned.push(key); G.equipped.helperSkin = key; }
+    else { this.flashHint('Need ' + s.cost + ' 💎 — earn them by selling, or tap Get 💎'); return; }
+    this.closeCosmetics(); this.openCosmetics();
+    this.flashHint('Crew now wearing ' + s.name + ' ' + s.set[0]);
+  }
+}
+
 new Phaser.Game({
   type: Phaser.AUTO,
   parent: 'game',
   width: W, height: H,
   backgroundColor: hex(COL.cream),
   scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
-  scene: [Market, Stall],
+  scene: [Market, Stall, HQ],
 });
 </script>
 </body>
