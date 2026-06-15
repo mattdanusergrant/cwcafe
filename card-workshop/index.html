@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="Chonky Card Workshop" />
+<title>Chonky Card Workshop — Prototype</title>
+<!--
+  CHONKY CARD WORKSHOP
+  A little lab for Chonky Wonton card games. No printer needed — everything plays on screen.
+
+  HOW IT WORKS (the "workshop" part):
+    - Shared engine below: a Chonky roster (the "art"), shuffle/deal helpers, and a card renderer.
+    - Each game is a plain object pushed into GAMES: { id, title, age, emoji, blurb, mount(root) }.
+    - mount(root) draws the game into the container and returns an optional cleanup() for timers.
+    - Add a new card game = write one mount() and push it to GAMES. That's the whole framework.
+
+  Current prototypes (single-player, lowest age first):
+    Boba Snap (2+) · Family Matching (3+) · Lonely Wonton (4+) · Chonky Chonk (4+) · Spot the Dumpling (5+)
+-->
+<style>
+  :root{
+    --cream:#FAF4EA; --floor:#F3E7D3; --card:#FFFFFF; --ink:#5A453B;
+    --red:#D64545; --tan:#E8C39E; --pink:#F2A6B3; --green:#8FBF6F;
+    --btn:#7BA86B; --btnOff:#C4BBA8; --gold:#E6C078; --line:#E4D6BE;
+  }
+  *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; -webkit-user-select:none; user-select:none; }
+  html,body{ margin:0; padding:0; height:100%; background:var(--floor); color:var(--ink);
+    font-family:"Nunito","Segoe UI",-apple-system,system-ui,sans-serif; }
+  #app{ max-width:430px; margin:0 auto; min-height:100%; background:var(--cream);
+    display:flex; flex-direction:column; box-shadow:0 0 40px rgba(90,69,59,.12); }
+  header{ display:flex; align-items:center; gap:10px; padding:14px 16px; border-bottom:2px solid var(--line); }
+  header .back{ font-size:22px; background:none; border:none; color:var(--ink); cursor:pointer; padding:4px 6px; display:none; }
+  header h1{ font-size:19px; margin:0; font-weight:800; letter-spacing:.2px; }
+  header .sub{ font-size:12px; opacity:.6; margin-top:1px; }
+  #view{ flex:1; padding:16px; }
+
+  /* Home launcher */
+  .grid{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .tile{ background:var(--card); border:2px solid var(--line); border-radius:18px; padding:14px;
+    cursor:pointer; transition:transform .08s ease, box-shadow .12s ease; box-shadow:0 3px 0 var(--line); }
+  .tile:active{ transform:translateY(2px); box-shadow:0 1px 0 var(--line); }
+  .tile .ico{ font-size:34px; line-height:1; }
+  .tile .nm{ font-weight:800; margin-top:8px; font-size:15px; }
+  .tile .bl{ font-size:11.5px; opacity:.65; margin-top:3px; line-height:1.35; }
+  .age{ display:inline-block; background:var(--green); color:#fff; font-weight:800; font-size:11px;
+    border-radius:20px; padding:2px 9px; margin-top:8px; }
+  .tile.soon{ opacity:.55; cursor:default; box-shadow:none; border-style:dashed; }
+  .tile.soon:active{ transform:none; }
+  .lede{ font-size:13px; opacity:.7; margin:0 2px 14px; line-height:1.4; }
+
+  /* Generic card */
+  .card{ aspect-ratio:5/7; border-radius:14px; background:var(--card); border:3px solid var(--line);
+    display:flex; flex-direction:column; align-items:center; justify-content:center; position:relative;
+    box-shadow:0 2px 6px rgba(90,69,59,.12); }
+  .card .emoji{ font-size:13vw; max-font-size:54px; line-height:1; }
+  .card .nm{ font-weight:800; font-size:12px; margin-top:6px; }
+  .card.back{ background:repeating-linear-gradient(45deg,var(--tan),var(--tan) 8px,#dcb98c 8px,#dcb98c 16px); }
+  .card.back::after{ content:"🥟"; font-size:11vw; filter:drop-shadow(0 1px 2px rgba(0,0,0,.15)); }
+
+  .btn{ background:var(--btn); color:#fff; border:none; border-radius:14px; font-weight:800; font-size:16px;
+    padding:14px 18px; cursor:pointer; box-shadow:0 3px 0 #5f8a53; }
+  .btn:active{ transform:translateY(2px); box-shadow:0 1px 0 #5f8a53; }
+  .btn.alt{ background:var(--red); box-shadow:0 3px 0 #a83434; }
+  .btn:disabled{ background:var(--btnOff); box-shadow:0 3px 0 #a89e88; cursor:default; }
+  .row{ display:flex; gap:10px; align-items:center; justify-content:center; flex-wrap:wrap; }
+  .center{ text-align:center; }
+  .big{ font-size:22px; font-weight:800; }
+  .muted{ opacity:.6; font-size:13px; }
+  .pill{ background:#fff; border:2px solid var(--line); border-radius:20px; padding:6px 12px; font-weight:800; font-size:14px; }
+  .toast{ position:fixed; left:50%; bottom:90px; transform:translateX(-50%); background:var(--ink); color:#fff;
+    padding:10px 18px; border-radius:20px; font-weight:800; opacity:0; transition:opacity .2s; pointer-events:none; }
+  .toast.show{ opacity:1; }
+  @keyframes pop{ 0%{transform:scale(.6);opacity:0;} 100%{transform:scale(1);opacity:1;} }
+  @keyframes shake{ 0%,100%{transform:translateX(0);} 25%{transform:translateX(-6px);} 75%{transform:translateX(6px);} }
+  .pop{ animation:pop .18s ease; }
+  .shake{ animation:shake .3s; }
+  .flip-in{ animation:pop .2s ease; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <button class="back" id="back">‹</button>
+    <div>
+      <h1 id="title">Chonky Card Workshop</h1>
+      <div class="sub" id="sub">a little lab for Chonky Wonton card games</div>
+    </div>
+  </header>
+  <div id="view"></div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+
+/* ============================================================
+   SHARED ENGINE
+   ============================================================ */
+
+// The Chonky roster — stands in for the apparel-print art. Swap emoji for real art later.
+const ROSTER = [
+  { id:'bao',    name:'Bao-Bao',  emoji:'🥟', color:'#E8C39E' },
+  { id:'pearl',  name:'Pearl',    emoji:'🧋', color:'#D8B68C' },
+  { id:'berry',  name:'Berry',    emoji:'🍓', color:'#F2A6B3' },
+  { id:'moon',   name:'Moon',     emoji:'🥮', color:'#E6C078' },
+  { id:'noodle', name:'Noodle',   emoji:'🍜', color:'#EBA46B' },
+  { id:'mochi',  name:'Mochi',    emoji:'🍡', color:'#F4B8C4' },
+  { id:'tea',    name:'Tea',      emoji:'🍵', color:'#A6C68C' },
+  { id:'rice',   name:'Riceball', emoji:'🍙', color:'#CFC9B8' },
+];
+
+function shuffle(a){ a=a.slice(); for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
+const rand = n => Math.floor(Math.random()*n);
+const wait = ms => new Promise(r=>setTimeout(r,ms));
+
+function el(tag, cls, html){ const e=document.createElement(tag); if(cls) e.className=cls; if(html!=null) e.innerHTML=html; return e; }
+function cardFaceHTML(c){ return `<div class="emoji">${c.emoji}</div><div class="nm">${c.name||''}</div>`; }
+
+let toastTimer=null;
+function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove('show'),1100); }
+
+/* ============================================================
+   SHELL  (home launcher + mount/unmount)
+   ============================================================ */
+const GAMES = [];
+const view = document.getElementById('view');
+const backBtn = document.getElementById('back');
+const titleEl = document.getElementById('title');
+const subEl = document.getElementById('sub');
+let cleanup = null;
+
+backBtn.addEventListener('click', goHome);
+
+function goHome(){
+  if(cleanup){ try{cleanup();}catch(e){} cleanup=null; }
+  backBtn.style.display='none';
+  titleEl.textContent='Chonky Card Workshop';
+  subEl.textContent='a little lab for Chonky Wonton card games';
+  renderHome();
+}
+
+function openGame(g){
+  if(cleanup){ try{cleanup();}catch(e){} cleanup=null; }
+  view.innerHTML='';
+  backBtn.style.display='block';
+  titleEl.textContent=g.title;
+  subEl.textContent=`ages ${g.age} · single-player demo`;
+  cleanup = g.mount(view) || null;
+}
+
+function renderHome(){
+  view.innerHTML='';
+  view.appendChild(el('p','lede','Five Chonky Wonton card games to play right here — no printer required. Tap one to try the single-player demo.'));
+  const grid = el('div','grid');
+  GAMES.forEach(g=>{
+    const t = el('div','tile');
+    t.innerHTML = `<div class="ico">${g.emoji}</div><div class="nm">${g.title}</div>
+      <div class="bl">${g.blurb}</div><span class="age">ages ${g.age}</span>`;
+    t.addEventListener('click',()=>openGame(g));
+    grid.appendChild(t);
+  });
+  const soon = el('div','tile soon');
+  soon.innerHTML = `<div class="ico">➕</div><div class="nm">More to come</div>
+    <div class="bl">Go Dish, Dim Sum Go!, Festival Deck — drop a new mount() into the workshop.</div>`;
+  grid.appendChild(soon);
+  view.appendChild(grid);
+}
+
+/* ============================================================
+   GAME 1 — BOBA SNAP  (ages 2+, Snap vs "Auntie")
+   Tap the cup to flip. When two cups in a row are the SAME flavour,
+   smack SNAP before Auntie does to win the stack.
+   ============================================================ */
+const BOBAS = [
+  { name:'Classic',     emoji:'🧋', color:'#C9A77C' },
+  { name:'Taro',        emoji:'🧋', color:'#C3A6E0' },
+  { name:'Matcha',      emoji:'🧋', color:'#A6C68C' },
+  { name:'Strawberry',  emoji:'🧋', color:'#F2A6B3' },
+  { name:'Brown Sugar', emoji:'🧋', color:'#B98B5E' },
+  { name:'Mango',       emoji:'🧋', color:'#F2C66B' },
+];
+GAMES.push({
+  id:'boba-snap', title:'Boba Snap', age:'2+', emoji:'🧋',
+  blurb:'Match two cups in a row, then smack SNAP before Auntie.',
+  mount(root){
+    let deck=[]; for(let i=0;i<5;i++) BOBAS.forEach(b=>deck.push(b)); deck=shuffle(deck);
+    let pile=[]; let you=0, auntie=0; let matchOpen=false; let auntieTimer=null;
+
+    root.innerHTML = `
+      <div class="center" style="margin-bottom:10px"><span class="pill" id="score">You 0 · Auntie 0</span></div>
+      <div id="cup" style="margin:8px auto 14px;width:60%;cursor:pointer"></div>
+      <div class="center muted" id="hint">Tap the cup to pour the next boba!</div>
+      <div class="row" style="margin-top:16px">
+        <button class="btn alt" id="snap" style="min-width:160px;font-size:22px" disabled>SNAP!</button>
+      </div>
+      <div class="center muted" style="margin-top:14px" id="left"></div>`;
+    const cup=root.querySelector('#cup'), snap=root.querySelector('#snap'),
+          hint=root.querySelector('#hint'), score=root.querySelector('#score'), left=root.querySelector('#left');
+
+    function draw(c){ cup.innerHTML=`<div class="card pop" style="background:${c?c.color:'#fff'}"><div class="emoji">${c?c.emoji:''}</div><div class="nm">${c?c.name:''}</div></div>`; }
+    function setScore(){ score.textContent=`You ${you} · Auntie ${auntie}`; left.textContent=`${deck.length} cups left in the jar`; }
+    draw(null); setScore();
+
+    function endMatch(winner){
+      matchOpen=false; snap.disabled=true; clearTimeout(auntieTimer);
+      const won=pile.length; if(winner==='you'){ you+=won; toast(`SNAP! +${won} to you 🎉`);} else { auntie+=won; toast(`Auntie got it! +${won}`);}
+      pile=[]; setScore();
+      if(deck.length===0) return finish();
+      hint.textContent='Tap the cup for the next boba!';
+    }
+    function finish(){
+      cup.innerHTML=''; snap.disabled=true;
+      const win = you>auntie?'You win! 🏆': you<auntie?'Auntie wins 🫖':"It's a tie! 🤝";
+      hint.innerHTML=`<div class="big">${win}</div>`;
+      const again=el('button','btn','Play again'); again.style.marginTop='10px';
+      again.onclick=()=>openGame(GAMES.find(g=>g.id==='boba-snap')); left.innerHTML=''; left.appendChild(again);
+    }
+
+    cup.addEventListener('click', ()=>{
+      if(matchOpen || deck.length===0) return;
+      const c=deck.pop(); pile.push(c); draw(c); setScore();
+      const prev=pile[pile.length-2];
+      if(prev && prev.name===c.name){
+        matchOpen=true; snap.disabled=false; hint.textContent='MATCH! Smack SNAP!';
+        const delay=600+rand(900);
+        auntieTimer=setTimeout(()=>{ if(matchOpen) endMatch('auntie'); }, delay);
+      } else if(deck.length===0){ finish(); }
+      else { hint.textContent='Keep pouring…'; }
+    });
+    snap.addEventListener('click', ()=>{ if(matchOpen) endMatch('you'); });
+
+    return ()=>clearTimeout(auntieTimer);
+  }
+});
+
+/* ============================================================
+   GAME 2 — FAMILY MATCHING  (ages 3+, Memory)
+   Flip two cards. Match a kid Chonky to its baby (the family-matching PJ pair).
+   ============================================================ */
+GAMES.push({
+  id:'family-match', title:'Family Matching', age:'3+', emoji:'👶',
+  blurb:'Flip two cards. Match each Chonky to its little sibling.',
+  mount(root){
+    const pick = shuffle(ROSTER).slice(0,6);
+    let deck=[]; pick.forEach(c=>{ deck.push({...c,kind:'kid'}); deck.push({...c,kind:'baby'}); });
+    deck=shuffle(deck).map((c,i)=>({...c,slot:i,done:false}));
+    let first=null, moves=0, matched=0, busy=false;
+
+    root.innerHTML = `
+      <div class="center" style="margin-bottom:12px"><span class="pill" id="hud">Moves 0 · Found 0/6</span></div>
+      <div id="board" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px"></div>`;
+    const board=root.querySelector('#board'), hud=root.querySelector('#hud');
+
+    deck.forEach(c=>{
+      const card=el('div','card back'); card.style.cursor='pointer'; card.dataset.slot=c.slot;
+      card.addEventListener('click',()=>flip(c,card)); board.appendChild(c.elc=card);
+    });
+    function setHud(){ hud.textContent=`Moves ${moves} · Found ${matched}/6`; }
+    function show(c){ c.elc.className='card flip-in'; c.elc.style.background=c.color;
+      c.elc.innerHTML=`<div class="emoji">${c.emoji}</div><div class="nm">${c.kind==='baby'?'baby ':''}${c.name}</div>`; }
+    function hide(c){ c.elc.className='card back'; c.elc.style.background=''; c.elc.innerHTML=''; }
+
+    function flip(c,card){
+      if(busy || c.done || c===first) return;
+      show(c);
+      if(!first){ first=c; return; }
+      moves++; setHud(); busy=true;
+      const a=first; first=null;
+      if(a.id===c.id){ a.done=c.done=true; matched++; setHud(); busy=false;
+        a.elc.style.outline=c.elc.style.outline='3px solid var(--green)';
+        if(matched===6){ setTimeout(win,400); } }
+      else { setTimeout(()=>{ hide(a); hide(c); busy=false; },700); }
+    }
+    function win(){
+      root.innerHTML=`<div class="center"><div class="big" style="font-size:26px">All families matched! 🎉</div>
+        <p class="muted">Done in ${moves} moves.</p></div>`;
+      const again=el('button','btn','Play again'); again.onclick=()=>openGame(GAMES.find(g=>g.id==='family-match'));
+      const r=el('div','row'); r.appendChild(again); root.querySelector('.center').appendChild(r);
+    }
+    setHud();
+  }
+});
+
+/* ============================================================
+   GAME 3 — LONELY WONTON  (ages 4+, Old Maid vs CPU)
+   Pair off your Chonkys. Don't be left holding the Lonely Wonton.
+   ============================================================ */
+const LONELY = { id:'lonely', name:'Lonely Wonton', emoji:'😢', color:'#E8C39E' };
+GAMES.push({
+  id:'lonely-wonton', title:'Lonely Wonton', age:'4+', emoji:'😢',
+  blurb:"Pair off your cards. Don't get stuck with the Lonely Wonton.",
+  mount(root){
+    const pairs = shuffle(ROSTER).slice(0,6);
+    let deck=[]; pairs.forEach(c=>{ deck.push({...c}); deck.push({...c}); }); deck.push({...LONELY});
+    deck=shuffle(deck);
+    let you=[], cpu=[]; deck.forEach((c,i)=> (i%2? cpu:you).push(c));
+    let turn='you', over=false;
+
+    function discardPairs(hand){
+      const seen={}; const out=[];
+      hand.forEach(c=>{ if(c.id===LONELY.id){ out.push(c); return; }
+        if(seen[c.id]){ delete seen[c.id]; } else { seen[c.id]=c; } });
+      Object.values(seen).forEach(c=>out.push(c));
+      return out;
+    }
+    you=discardPairs(you); cpu=discardPairs(cpu);
+
+    root.innerHTML = `
+      <div class="center muted" id="msg" style="min-height:20px;margin-bottom:8px"></div>
+      <div class="muted" style="font-weight:800;margin-bottom:6px">Auntie's hand <span id="ccount"></span></div>
+      <div id="cpu" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px"></div>
+      <div class="muted" style="font-weight:800;margin-bottom:6px">Your hand <span id="ycount"></span></div>
+      <div id="you" style="display:flex;gap:6px;flex-wrap:wrap"></div>`;
+    const cpuEl=root.querySelector('#cpu'), youEl=root.querySelector('#you'),
+          msg=root.querySelector('#msg'), cc=root.querySelector('#ccount'), yc=root.querySelector('#ycount');
+
+    function render(){
+      cc.textContent=`(${cpu.length})`; yc.textContent=`(${you.length})`;
+      cpuEl.innerHTML=''; youEl.innerHTML='';
+      cpu.forEach((c,i)=>{ const card=el('div','card back'); card.style.cssText='width:52px;cursor:pointer';
+        if(turn==='you'&&!over) card.addEventListener('click',()=>youDraw(i)); else card.style.opacity=.85; cpuEl.appendChild(card); });
+      you.forEach(c=>{ const card=el('div','card'); card.style.cssText=`width:52px;background:${c.color}`;
+        card.innerHTML=`<div class="emoji" style="font-size:26px">${c.emoji}</div>`; youEl.appendChild(card); });
+    }
+    function check(){
+      if(you.length===0){ return finish('you'); }
+      if(cpu.length===0){ return finish('cpu'); }
+    }
+    function finish(emptyHand){
+      over=true;
+      const youLose = you.some(c=>c.id===LONELY.id);
+      msg.innerHTML=`<div class="big">${youLose?'Aww — you held the Lonely Wonton 😢':'You paired off first! 🎉'}</div>`;
+      render();
+      const again=el('button','btn','Play again'); again.style.marginTop='12px';
+      again.onclick=()=>openGame(GAMES.find(g=>g.id==='lonely-wonton'));
+      msg.appendChild(again);
+    }
+    function youDraw(i){
+      if(turn!=='you'||over) return;
+      you.push(cpu.splice(i,1)[0]); you=discardPairs(you);
+      msg.textContent='You drew a card.'; turn='cpu'; render();
+      if(cpu.length===0||you.length===0) return check();
+      setTimeout(cpuTurn,800);
+    }
+    function cpuTurn(){
+      if(over) return;
+      cpu.push(you.splice(rand(you.length),1)[0]); cpu=discardPairs(cpu);
+      msg.textContent='Auntie took one of your cards.'; turn='you'; render();
+      check();
+    }
+    msg.textContent='Tap one of Auntie’s cards to draw.'; render(); check();
+  }
+});
+
+/* ============================================================
+   GAME 4 — CHONKY CHONK  (ages 4+, War vs CPU)
+   Flip your top card. The chonkier Chonky wins the pair. Tie = Chonk-off!
+   ============================================================ */
+GAMES.push({
+  id:'chonky-chonk', title:'Chonky Chonk', age:'4+', emoji:'⚖️',
+  blurb:'Flip cards — the chonkier Chonky wins. Tie? Chonk-off!',
+  mount(root){
+    let deck=[]; ROSTER.forEach(c=>{ for(let i=0;i<3;i++) deck.push({...c, chonk:1+rand(10)}); });
+    deck=shuffle(deck); let you=deck.slice(0,12), cpu=deck.slice(12,24); let pot=[]; let over=false;
+
+    root.innerHTML = `
+      <div class="center" style="margin-bottom:12px"><span class="pill" id="hud"></span></div>
+      <div class="row" style="align-items:flex-start;gap:18px">
+        <div class="center" style="flex:1"><div class="muted" style="font-weight:800;margin-bottom:6px">You</div><div id="yc"></div></div>
+        <div class="center" style="flex:1"><div class="muted" style="font-weight:800;margin-bottom:6px">Auntie</div><div id="cc"></div></div>
+      </div>
+      <div class="center" id="msg" style="min-height:26px;margin:16px 0" class="big"></div>
+      <div class="row"><button class="btn" id="flip" style="min-width:170px">Flip!</button></div>`;
+    const hud=root.querySelector('#hud'), ycEl=root.querySelector('#yc'), ccEl=root.querySelector('#cc'),
+          msg=root.querySelector('#msg'), flip=root.querySelector('#flip');
+
+    const blank = who => `<div class="card back" style="margin:0 auto;width:80px"></div>`;
+    function faceHTML(c){ return `<div class="card pop" style="margin:0 auto;width:80px;background:${c.color}">
+      <div class="emoji" style="font-size:34px">${c.emoji}</div><div class="nm">chonk ${c.chonk}</div></div>`; }
+    function setHud(){ hud.textContent=`You ${you.length} · Auntie ${cpu.length}`; }
+    ycEl.innerHTML=blank(); ccEl.innerHTML=blank(); setHud(); msg.className='center big';
+
+    function round(){
+      if(over) return;
+      if(!you.length||!cpu.length) return finish();
+      const a=you.shift(), b=cpu.shift(); pot.push(a,b);
+      ycEl.innerHTML=faceHTML(a); ccEl.innerHTML=faceHTML(b);
+      if(a.chonk>b.chonk){ you.push(...shuffle(pot)); pot=[]; msg.textContent=`You win ${'+'} the pile!`; }
+      else if(b.chonk>a.chonk){ cpu.push(...shuffle(pot)); pot=[]; msg.textContent='Auntie takes the pile.'; }
+      else { msg.textContent='Tie — CHONK-OFF! Flip again!'; }
+      setHud();
+      if(!you.length||!cpu.length) setTimeout(finish,500);
+    }
+    function finish(){
+      over=true; flip.disabled=true;
+      const w = you.length>cpu.length?'You win! 🏆':'Auntie wins 🫖';
+      msg.textContent=w;
+      const again=el('button','btn','Play again'); again.onclick=()=>openGame(GAMES.find(g=>g.id==='chonky-chonk'));
+      root.querySelector('.row:last-child').appendChild(again);
+    }
+    flip.addEventListener('click',round);
+  }
+});
+
+/* ============================================================
+   GAME 5 — SPOT THE DUMPLING  (ages 5+, Dobble)
+   Two cards always share exactly ONE food. Tap the match. Score in 45s.
+   ============================================================ */
+const SPOT_ICONS = ['🥟','🧋','🍓','🥮','🍜','🍡','🍵','🍙','🍥','🥠','🍘','🫖','🍢']; // 13 = order-3 plane
+function dobbleDeck(n){ // n prime
+  const cards=[];
+  for(let i=0;i<=n;i++){ const c=[0]; for(let j=0;j<n;j++) c.push(1+i*n+j); cards.push(c); }
+  for(let i=0;i<n;i++) for(let j=0;j<n;j++){ const c=[1+i];
+    for(let k=0;k<n;k++) c.push(1+n+n*k+((i*k+j)%n)); cards.push(c); }
+  return cards;
+}
+GAMES.push({
+  id:'spot-dumpling', title:'Spot the Dumpling', age:'5+', emoji:'👀',
+  blurb:'Two cards share one food. Spot it fast — beat the clock!',
+  mount(root){
+    const deck = dobbleDeck(3); // 13 cards, 4 icons each
+    let score=0, time=45, over=false, a, b, match;
+    let tickTimer=null;
+
+    root.innerHTML = `
+      <div class="center" style="display:flex;justify-content:space-between;margin-bottom:10px">
+        <span class="pill" id="sc">Score 0</span><span class="pill" id="tm">⏱ 45</span></div>
+      <div id="cardA" class="dcard"></div>
+      <div class="center muted" style="margin:8px 0">↑ find the one food on both ↓</div>
+      <div id="cardB" class="dcard"></div>`;
+    const sc=root.querySelector('#sc'), tm=root.querySelector('#tm');
+    const cA=root.querySelector('#cardA'), cB=root.querySelector('#cardB');
+    [cA,cB].forEach(c=>{ c.style.cssText='background:#fff;border:3px solid var(--line);border-radius:20px;padding:14px;display:grid;grid-template-columns:1fr 1fr;gap:6px;place-items:center;min-height:120px'; });
+
+    function deal(){
+      // pick two distinct cards sharing exactly one icon (guaranteed by construction; verified defensively)
+      let tries=0;
+      do{ a=deck[rand(deck.length)]; b=deck[rand(deck.length)]; tries++; }
+      while((a===b || a.filter(x=>b.includes(x)).length!==1) && tries<200);
+      match = a.find(x=>b.includes(x));
+      paint(cA,a); paint(cB,b);
+    }
+    function paint(container,card){
+      container.innerHTML='';
+      shuffle(card).forEach(sym=>{
+        const d=el('div',null,SPOT_ICONS[sym]);
+        const size=26+rand(16); const rot=rand(50)-25;
+        d.style.cssText=`font-size:${size}px;cursor:pointer;transform:rotate(${rot}deg);transition:transform .1s`;
+        d.addEventListener('click',()=>guess(sym,d));
+        container.appendChild(d);
+      });
+    }
+    function guess(sym,d){
+      if(over) return;
+      if(sym===match){ score++; sc.textContent=`Score ${score}`; toast('Yes! 🎉'); deal(); }
+      else { d.parentElement.classList.add('shake'); setTimeout(()=>d.parentElement.classList.remove('shake'),300);
+        time=Math.max(0,time-3); tm.textContent=`⏱ ${time}`; toast('Not that one'); }
+    }
+    tickTimer=setInterval(()=>{ if(over) return; time--; tm.textContent=`⏱ ${time}`; if(time<=0) finish(); },1000);
+    function finish(){
+      over=true; clearInterval(tickTimer);
+      root.innerHTML=`<div class="center"><div class="big" style="font-size:26px">Time! ⏱</div>
+        <p>You spotted <b>${score}</b> dumplings.</p></div>`;
+      const again=el('button','btn','Play again'); again.onclick=()=>openGame(GAMES.find(g=>g.id==='spot-dumpling'));
+      const r=el('div','row'); r.appendChild(again); root.querySelector('.center').appendChild(r);
+    }
+    deal();
+    return ()=>clearInterval(tickTimer);
+  }
+});
+
+/* ============================================================ */
+goHome();
+</script>
+</body>
+</html>
