@@ -154,7 +154,7 @@ function openGame(g){
 
 function renderHome(){
   view.innerHTML='';
-  view.appendChild(el('p','lede','Five Chonky Wonton card games to play right here — no printer required. Tap one to try the single-player demo.'));
+  view.appendChild(el('p','lede','Eight Chonky Wonton card games to play right here — no printer required. Tap one to try the single-player demo.'));
   const grid = el('div','grid');
   GAMES.forEach(g=>{
     const t = el('div','tile');
@@ -164,8 +164,8 @@ function renderHome(){
     grid.appendChild(t);
   });
   const soon = el('div','tile soon');
-  soon.innerHTML = `<div class="ico">➕</div><div class="nm">More to come</div>
-    <div class="bl">Go Dish, Dim Sum Go!, Festival Deck — drop a new mount() into the workshop.</div>`;
+  soon.innerHTML = `<div class="ico">🛠️</div><div class="nm">Your game here</div>
+    <div class="bl">The workshop is extensible — add a card game with one mount() function.</div>`;
   grid.appendChild(soon);
   view.appendChild(grid);
 }
@@ -470,6 +470,206 @@ GAMES.push({
     }
     deal();
     return ()=>clearInterval(tickTimer);
+  }
+});
+
+/* ============================================================
+   GAME 6 — GO DISH  (ages 5+, Go Fish vs CPU)
+   Ask Auntie for Chonkys to complete dim-sum sets of four.
+   ============================================================ */
+GAMES.push({
+  id:'go-dish', title:'Go Dish', age:'5+', emoji:'🍤',
+  blurb:'Ask Auntie for cards to complete dim-sum sets of four.',
+  mount(root){
+    let deck=[]; ROSTER.forEach(c=>{ for(let i=0;i<4;i++) deck.push({...c}); }); deck=shuffle(deck);
+    let you=deck.splice(0,5), cpu=deck.splice(0,5), cart=deck;
+    let yBooks=0, cBooks=0, over=false, turn='you';
+
+    root.innerHTML = `
+      <div class="center" style="margin-bottom:8px"><span class="pill" id="hud"></span></div>
+      <div class="center muted" id="msg" style="min-height:38px;margin-bottom:10px"></div>
+      <div class="muted" style="font-weight:800;margin-bottom:6px">Your hand — tap a Chonky to ask Auntie</div>
+      <div id="hand" style="display:flex;gap:6px;flex-wrap:wrap"></div>`;
+    const hud=root.querySelector('#hud'), msg=root.querySelector('#msg'), hand=root.querySelector('#hand');
+
+    const nameOf = id => ROSTER.find(c=>c.id===id).name;
+    function pullBooks(arr){ const m={}; arr.forEach(c=>m[c.id]=(m[c.id]||0)+1); let books=0;
+      Object.keys(m).forEach(id=>{ if(m[id]>=4){ books++; for(let i=arr.length-1;i>=0;i--) if(arr[i].id===id) arr.splice(i,1); } });
+      return books; }
+    function drawUp(arr){ if(arr.length===0 && cart.length) arr.push(cart.shift()); }
+    function setHud(){ hud.textContent=`Your sets ${yBooks} · Auntie ${cBooks} · cart ${cart.length}`; }
+
+    function render(){
+      hand.innerHTML=''; const seen={};
+      you.forEach(c=>{
+        if(seen[c.id]){ seen[c.id].n++; return; }
+        const card=el('div','card'); card.style.cssText=`width:58px;background:${c.color};position:relative;cursor:${turn==='you'&&!over?'pointer':'default'}`;
+        card.innerHTML=`<div class="emoji" style="font-size:26px">${c.emoji}</div><div class="nm">${c.name}</div>`;
+        const badge=el('div'); badge.style.cssText='position:absolute;top:2px;right:5px;font-weight:800;font-size:12px';
+        card.appendChild(badge); if(turn==='you'&&!over) card.addEventListener('click',()=>ask(c.id));
+        seen[c.id]={badge,n:1}; hand.appendChild(card);
+      });
+      Object.values(seen).forEach(s=> s.badge.textContent='×'+s.n);
+      setHud();
+    }
+    function endCheck(){
+      if(yBooks+cBooks===ROSTER.length || (cart.length===0 && you.length===0 && cpu.length===0)){
+        over=true; const w=yBooks>cBooks?'You win! 🏆':yBooks<cBooks?'Auntie wins 🫖':'Tie! 🤝';
+        msg.innerHTML=`<div class="big">${w}</div>`;
+        const again=el('button','btn','Play again'); again.style.marginTop='10px';
+        again.onclick=()=>openGame(GAMES.find(g=>g.id==='go-dish')); msg.appendChild(again); render(); return true;
+      }
+      return false;
+    }
+    function afterMove(){
+      yBooks+=pullBooks(you); cBooks+=pullBooks(cpu); drawUp(you); drawUp(cpu);
+      if(endCheck()) return;
+      if(turn==='you' && you.length===0) turn='cpu';
+      render();
+      if(turn==='cpu') setTimeout(cpuTurn,900);
+    }
+    function ask(id){
+      if(turn!=='you'||over) return;
+      const got=cpu.filter(c=>c.id===id);
+      if(got.length){ cpu=cpu.filter(c=>c.id!==id); got.forEach(c=>you.push(c));
+        msg.textContent=`You asked for ${nameOf(id)} — Auntie had ${got.length}! Go again.`; }
+      else { msg.textContent=`You asked for ${nameOf(id)} — “Go dish!” You draw from the cart.`;
+        if(cart.length){ const d=cart.shift(); you.push(d); if(d.id===id) msg.textContent+=` You fished one! Go again.`; else turn='cpu'; }
+        else turn='cpu'; }
+      afterMove();
+    }
+    function cpuTurn(){
+      if(over) return;
+      if(cpu.length===0){ drawUp(cpu); if(cpu.length===0){ turn='you'; afterMove(); return; } }
+      const id=cpu[rand(cpu.length)].id; const got=you.filter(c=>c.id===id);
+      if(got.length){ you=you.filter(c=>c.id!==id); got.forEach(c=>cpu.push(c));
+        msg.textContent=`Auntie asked for ${nameOf(id)} — you had ${got.length}. She goes again.`; turn='cpu'; }
+      else { msg.textContent=`Auntie asked for ${nameOf(id)} — you said “Go dish!”`;
+        if(cart.length){ const d=cart.shift(); cpu.push(d); turn=(d.id===id)?'cpu':'you'; } else turn='you'; }
+      afterMove();
+    }
+    yBooks+=pullBooks(you); cBooks+=pullBooks(cpu);
+    msg.textContent='Tap a Chonky in your hand to ask Auntie for it.'; render(); endCheck();
+  }
+});
+
+/* ============================================================
+   GAME 7 — FESTIVAL DECK  (ages 5+, co-op seasonal ritual)
+   Draw one Lunar New Year tradition a day — a cozy 7-day deck.
+   ============================================================ */
+const FESTIVAL = [
+  { e:'🧧', t:'Red Envelopes',    p:'Give someone a hóngbāo. Tell them one thing you’re grateful for.' },
+  { e:'🥟', t:'Dumpling Night',   p:'Fold dumplings together. Hide a clean coin in one for luck!' },
+  { e:'🦁', t:'Lion Dance',       p:'Do a lion dance around the house. Make as much noise as you can!' },
+  { e:'🏮', t:'Light the Lanterns',p:'Hang a red lantern and make a wish as it glows.' },
+  { e:'🍊', t:'Lucky Oranges',    p:'Share oranges and tangerines — they bring gold and good fortune.' },
+  { e:'🧹', t:'Sweep It Out',     p:'Tidy up to sweep away last year’s bad luck (just not on Day 1!).' },
+  { e:'🌕', t:'Reunion Feast',    p:'Gather for dinner. Leave one seat for someone far away.' },
+];
+GAMES.push({
+  id:'festival-deck', title:'Festival Deck', age:'5+', emoji:'🏮',
+  blurb:'Draw one Lunar New Year tradition a day. A cozy 7-day ritual.',
+  mount(root){
+    let day=0; const lanterns=[];
+    root.innerHTML = `
+      <div class="center" id="track" style="font-size:22px;letter-spacing:5px;min-height:30px;margin-bottom:12px"></div>
+      <div id="holder" class="center" style="margin:6px auto;width:74%"></div>
+      <div class="row" style="margin-top:18px"><button class="btn alt" id="next" style="min-width:190px">Draw Day 1</button></div>`;
+    const track=root.querySelector('#track'), holder=root.querySelector('#holder'), next=root.querySelector('#next');
+    holder.innerHTML=`<div class="card back" style="margin:0 auto"></div>`;
+    next.addEventListener('click',()=>{
+      if(day>=FESTIVAL.length) return;
+      const f=FESTIVAL[day]; day++;
+      holder.innerHTML=`<div class="card pop" style="margin:0 auto;background:var(--red);color:#fff;border-color:#a83434">
+        <div class="emoji" style="font-size:42px">${f.e}</div>
+        <div class="nm" style="font-size:12px;opacity:.9">Day ${day}</div>
+        <div style="font-weight:800;margin-top:6px;font-size:15px">${f.t}</div>
+        <div style="font-size:11.5px;opacity:.95;margin-top:8px;padding:0 12px;line-height:1.4">${f.p}</div></div>`;
+      lanterns.push('🏮'); track.textContent=lanterns.join(' ');
+      if(day>=FESTIVAL.length){ next.textContent='Festival complete! 🎉 Again?';
+        next.onclick=()=>openGame(GAMES.find(g=>g.id==='festival-deck')); }
+      else next.textContent=`Draw Day ${day+1}`;
+    });
+  }
+});
+
+/* ============================================================
+   GAME 8 — DIM SUM GO!  (ages 7+, Sushi Go!-style drafting)
+   Draft a card, pass your hand, repeat. Best dim-sum spread wins.
+   Scoring: 🥟 sets (1/3/6/10/15) · 🧋 pairs (5 each) · 🍵 most leaves (+6) · 🥮 each 2, most +4
+   ============================================================ */
+GAMES.push({
+  id:'dim-sum-go', title:'Dim Sum Go!', age:'7+', emoji:'🥡',
+  blurb:'Draft tasty cards, pass the rest. Best dim-sum spread wins.',
+  mount(root){
+    const NAMES=['You','Auntie','Po-Po'];
+    let deck=[]; const add=(n,o)=>{ for(let i=0;i<n;i++) deck.push({...o, val:o.type==='tea'?1+rand(3):0}); };
+    add(10,{type:'dumpling',emoji:'🥟',name:'Dumpling'});
+    add(8,{type:'boba',emoji:'🧋',name:'Boba'});
+    add(6,{type:'tea',emoji:'🍵',name:'Tea'});
+    add(6,{type:'mooncake',emoji:'🥮',name:'Mooncake'});
+    deck=shuffle(deck);
+    let hands=[deck.splice(0,7),deck.splice(0,7),deck.splice(0,7)];
+    let colls=[[],[],[]], pick=0, over=false;
+
+    root.innerHTML = `
+      <div class="center" style="margin-bottom:8px"><span class="pill" id="hud"></span></div>
+      <div class="center muted" id="log" style="min-height:18px;margin-bottom:10px"></div>
+      <div class="muted" style="font-weight:800;margin:4px 0 6px">Your hand — pick one</div>
+      <div id="hand" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px"></div>
+      <div class="muted" style="font-weight:800;margin-bottom:6px">Trays</div>
+      <div id="trays" style="font-size:13px;line-height:1.8"></div>`;
+    const hud=root.querySelector('#hud'), log=root.querySelector('#log'), handEl=root.querySelector('#hand'), traysEl=root.querySelector('#trays');
+
+    function cardValue(card,coll){
+      if(card.type==='dumpling'){ const tbl=[0,1,3,6,10,15]; const n=coll.filter(c=>c.type==='dumpling').length;
+        return (tbl[Math.min(n+1,5)]) - (tbl[Math.min(n,5)]); }
+      if(card.type==='boba'){ return coll.filter(c=>c.type==='boba').length%2 ? 5 : 2; }
+      if(card.type==='tea') return card.val*1.5;
+      return 2;
+    }
+    function cpuPick(hand,coll){ let bi=0; for(let i=1;i<hand.length;i++) if(cardValue(hand[i],coll)>cardValue(hand[bi],coll)) bi=i; return bi; }
+    function trayLine(i){ const c=colls[i];
+      const d=c.filter(x=>x.type==='dumpling').length, b=c.filter(x=>x.type==='boba').length,
+            t=c.filter(x=>x.type==='tea').reduce((a,x)=>a+x.val,0), m=c.filter(x=>x.type==='mooncake').length;
+      return `<b>${NAMES[i]}:</b> 🥟${d} 🧋${b} 🍵${t} 🥮${m}`; }
+    function render(){
+      hud.textContent=`Pick ${pick+1}/7`; handEl.innerHTML='';
+      hands[0].forEach((c,i)=>{ const card=el('div','card'); card.style.cssText='width:54px;background:#fff;cursor:pointer';
+        card.innerHTML=`<div class="emoji" style="font-size:24px">${c.emoji}</div><div class="nm" style="font-size:10px">${c.name}${c.type==='tea'?' '+c.val:''}</div>`;
+        card.addEventListener('click',()=>choose(i)); handEl.appendChild(card); });
+      traysEl.innerHTML = colls.map((_,i)=>trayLine(i)).join('<br>');
+    }
+    function choose(idx){
+      if(over) return;
+      colls[0].push(hands[0].splice(idx,1)[0]);
+      const msg=[]; for(let p=1;p<3;p++){ const bi=cpuPick(hands[p],colls[p]); const card=hands[p].splice(bi,1)[0];
+        colls[p].push(card); msg.push(`${NAMES[p]} took ${card.emoji}`); }
+      log.textContent=msg.join(' · ');
+      hands.push(hands.shift()); pick++;
+      if(pick>=7 || hands[0].length===0) return finish();
+      render();
+    }
+    function finish(){
+      over=true;
+      const score=c=>{ const tbl=[0,1,3,6,10,15]; const d=c.filter(x=>x.type==='dumpling').length;
+        let s=(d<=5?tbl[d]:15+(d-5)*2); s+=Math.floor(c.filter(x=>x.type==='boba').length/2)*5;
+        s+=c.filter(x=>x.type==='mooncake').length*2; return s; };
+      const base=colls.map(score);
+      const tea=colls.map(c=>c.filter(x=>x.type==='tea').reduce((a,x)=>a+x.val,0));
+      const maxT=Math.max(...tea); tea.forEach((t,i)=>{ if(t===maxT&&maxT>0) base[i]+=6; });
+      const moon=colls.map(c=>c.filter(x=>x.type==='mooncake').length);
+      const maxM=Math.max(...moon); moon.forEach((m,i)=>{ if(m===maxM&&maxM>0) base[i]+=4; });
+      let wi=0; base.forEach((s,i)=>{ if(s>base[wi]) wi=i; });
+      root.innerHTML=`<div class="center"><div class="big" style="font-size:24px">${wi===0?'You win! 🏆':NAMES[wi]+' wins 🫖'}</div>
+        <div style="margin:14px 0;font-size:16px;line-height:2">
+          ${NAMES.map((n,i)=>`${i===0?'<b>':''}${n}: ${base[i]} pts${i===0?'</b>':''}`).join('<br>')}</div>
+        <div class="muted" style="font-size:11.5px;padding:0 10px">🥟 sets 1/3/6/10/15 · 🧋 pairs 5 · 🍵 most leaves +6 · 🥮 each 2, most +4</div></div>`;
+      const again=el('button','btn','Play again'); again.style.marginTop='14px';
+      again.onclick=()=>openGame(GAMES.find(g=>g.id==='dim-sum-go'));
+      const r=el('div','row'); r.appendChild(again); root.querySelector('.center').appendChild(r);
+    }
+    render();
   }
 });
 
